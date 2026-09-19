@@ -21,6 +21,7 @@ import textwrap
 import time
 import tempfile
 from contextlib import contextmanager
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -915,9 +916,12 @@ def telegram_post(config: dict, text: str) -> None:
         raise RuntimeError("Refusing to post: public copy contains a URL.")
     if re.search(r"\bICT\b", text, flags=re.IGNORECASE):
         raise RuntimeError("Refusing to post: public time must not include ICT.")
-    if tg.get("mode", "bridge") == "bridge":
+    mode = tg.get("mode", "bridge")
+    if mode == "bridge":
         return telegram_bridge_post(tg, text)
-    raise RuntimeError("Only the credential-owning OpenClaw bridge is supported.")
+    if mode == "direct":
+        return telegram_direct_post(tg, text)
+    raise RuntimeError(f"Unsupported Telegram transport {mode!r}; use 'bridge' or 'direct'.")
 
 
 def telegram_bridge_post(tg: dict, text: str) -> dict:
@@ -948,6 +952,54 @@ def telegram_bridge_post(tg: dict, text: str) -> dict:
             "exitCode": result.returncode}
 
 
+def _redact_token(text: str, token: str) -> str:
+    """Telegram puts the bot token in the URL, so it leaks into error strings."""
+    return text.replace(token, "<token>") if token else text
+
+
+def telegram_direct_post(tg: dict, text: str) -> dict:
+    """Post straight to the Telegram Bot API.
+
+    Used on hosts that do not run OpenClaw (a Linux VPS). The bridge remains the
+    default; this path reads the token from the environment name declared by
+    tokenEnv and never writes it to logs.
+    """
+    token_env = tg.get("tokenEnv", "")
+    token = os.environ.get(token_env, "").strip()
+    if not token:
+        raise RuntimeError(f"Missing Telegram bot token in ${token_env}.")
+    channel_id = (os.environ.get(tg.get("channelEnv", ""), "") or tg.get("channelId", "")).strip()
+    if not channel_id:
+        raise RuntimeError("Missing Telegram channelId.")
+
+    body = json.dumps({
+        "chat_id": channel_id,
+        "text": text,
+        "disable_web_page_preview": True,
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/sendMessage",
+        data=body,
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:300]
+        return {"status": "pending", "reason": "telegram-http-error",
+                "httpStatus": exc.code, "detail": _redact_token(detail, token)}
+    except Exception as exc:
+        return {"status": "pending", "reason": "telegram-request-failed",
+                "detail": _redact_token(str(exc), token)}
+
+    ack = extract_ack(payload)
+    if ack:
+        return {"status": "confirmed", "reason": "telegram-message-ack", **ack}
+    return {"status": "pending", "reason": "telegram-no-message-ack"}
+
+
 def extract_ack(payload):
     if not isinstance(payload, dict) or payload.get("ok") is False:
         return None
@@ -964,12 +1016,23 @@ def extract_ack(payload):
 
 def assert_posting_ready(config: dict) -> None:
     tg = config["posting"].get("telegram", {})
-    if tg.get("mode", "bridge") == "bridge":
-        channel_env = tg.get("channelEnv", "")
-        if not (os.environ.get(channel_env) or tg.get("channelId", "")):
+    mode = tg.get("mode", "bridge")
+    channel_env = tg.get("channelEnv", "")
+    has_channel = bool(os.environ.get(channel_env) or tg.get("channelId", ""))
+    if mode == "bridge":
+        if not has_channel:
             raise RuntimeError("Missing Telegram bridge channelId.")
         return
-    raise RuntimeError("Unsupported credential transport; use OpenClaw bridge.")
+    if mode == "direct":
+        token_env = tg.get("tokenEnv", "")
+        if not token_env:
+            raise RuntimeError("Direct transport needs posting.telegram.tokenEnv.")
+        if not os.environ.get(token_env, "").strip():
+            raise RuntimeError(f"Missing Telegram bot token in ${token_env}.")
+        if not has_channel:
+            raise RuntimeError("Missing Telegram channelId.")
+        return
+    raise RuntimeError(f"Unsupported credential transport {mode!r}; use 'bridge' or 'direct'.")
 
 
 def test_telegram(config: dict, message: str) -> int:

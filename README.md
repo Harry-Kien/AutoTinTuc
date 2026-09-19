@@ -42,38 +42,50 @@ python scripts/fastnews247_mvp.py --test-telegram "ping"   # thử kết nối T
 python scripts/fastnews247_source_probe.py         # kiểm tra nguồn RSS
 ```
 
-## ⚠️ Trước khi triển khai lên VPS — đọc phần này
+## Hai đường gửi Telegram
 
-Bot **chưa chạy được trên Linux nguyên trạng**. Đây là hạn chế đã biết, không phải bug ngẫu nhiên.
+Chọn bằng trường `posting.telegram.mode` trong `config/fastnews247.sources.json`.
 
-Đường đăng Telegram cố tình đi qua OpenClaw bridge để token không bao giờ rời khỏi
-OpenClaw (`scripts/fastnews247_mvp.py`):
+### `mode: "bridge"` — mặc định, dùng trên Windows
 
-```python
-raise RuntimeError("Only the credential-owning OpenClaw bridge is supported.")
+Đẩy qua OpenClaw CLI để token không bao giờ rời khỏi OpenClaw. Đây là thiết kế gốc và
+là đường đang chạy thật trên máy Windows. Hạn chế: bridge dò CLI qua `%APPDATA%`, biến
+chỉ tồn tại trên Windows — nên đường này **không chạy trên Linux**.
+
+### `mode: "direct"` — dùng trên VPS Linux
+
+Gọi thẳng `api.telegram.org/bot<token>/sendMessage`, token đọc từ biến môi trường khai
+báo ở `tokenEnv`. Chỉ dùng thư viện chuẩn, nên VPS chỉ cần Python 3 — không cần cài
+Node, không cần OpenClaw.
+
+Giữ đúng hợp đồng của bridge: chỉ coi là `confirmed` khi Telegram trả về `message_id`
+kèm `chat_id` thật. Mọi trường hợp khác (lỗi HTTP, mạng hỏng, phản hồi thiếu ack) đều là
+`pending`, không bao giờ đánh dấu đã đăng khi chưa chắc chắn. Token được che trong mọi
+thông báo lỗi, vì Telegram nhét token vào URL nên nó rất dễ lọt vào log.
+
+Bật bằng cách sửa config:
+
+```json
+"telegram": {
+  "enabled": true,
+  "mode": "direct",
+  "tokenEnv": "FASTNEWS247_TELEGRAM_BOT_TOKEN",
+  "channelEnv": "FASTNEWS247_TELEGRAM_CHANNEL_ID",
+  "channelId": "@fastnews247vn"
+}
 ```
 
-Và bridge gọi CLI qua đường dẫn chỉ có trên Windows:
+Kiểm thử offline (không gửi tin thật, không cần mạng):
 
-```python
-cli = Path(os.environ.get("APPDATA", "")) / "npm/node_modules/openclaw/openclaw.mjs"
+```bash
+python scripts/test_telegram_direct.py
 ```
 
-Trên Linux `APPDATA` không tồn tại → không tìm thấy CLI → không đăng được.
+Thử gửi một tin thật khi đã sẵn sàng:
 
-Có hai hướng xử lý, chọn một:
-
-**Hướng A — giữ nguyên mô hình bảo mật.** Cài OpenClaw trên VPS, cấu hình kênh
-Telegram ở đó, rồi sửa phần dò đường dẫn CLI cho đa nền tảng. Token vẫn nằm trong
-OpenClaw. Nặng hơn nhưng giữ đúng thiết kế ban đầu.
-
-**Hướng B — thêm transport gọi thẳng Telegram API.** Bổ sung nhánh
-`mode: "direct"` gọi `api.telegram.org/bot<token>/sendMessage`, đọc token từ biến môi
-trường. VPS gọn nhẹ, nhưng token nằm trong `.env` trên máy chủ — khác với chủ ý ban đầu
-của tác giả.
-
-Phần `deploy/` trong repo này đã dựng sẵn cho **hướng B** (systemd đọc `.env`). Nếu chọn
-hướng A thì `EnvironmentFile` không còn cần thiết.
+```bash
+python scripts/fastnews247_mvp.py --test-telegram "ping"
+```
 
 ## Triển khai VPS (sau khi đã chọn hướng ở trên)
 
