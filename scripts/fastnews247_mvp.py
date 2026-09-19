@@ -15,6 +15,7 @@ import html
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -924,12 +925,66 @@ def telegram_post(config: dict, text: str) -> None:
     raise RuntimeError(f"Unsupported Telegram transport {mode!r}; use 'bridge' or 'direct'.")
 
 
+def resolve_openclaw_cli() -> list[str]:
+    """Return the argv prefix that runs the OpenClaw CLI on this host.
+
+    The original code hardcoded %APPDATA%\\npm\\node_modules, which only exists on
+    Windows, so the bridge could never run on a Linux VPS. Resolution order: an
+    explicit OPENCLAW_CLI override, the known global module locations, npm
+    itself, and only then the launcher on PATH.
+
+    "node openclaw.mjs" is preferred over that launcher on purpose. On Windows
+    the launcher is openclaw.CMD, so using it would (a) change the behaviour of
+    the existing, working Windows deployment and (b) push headline text - which
+    comes from third-party feeds - through cmd.exe quoting rules.
+    """
+    override = os.environ.get("OPENCLAW_CLI", "").strip()
+    if override:
+        return ["node", override] if override.endswith((".mjs", ".js")) else [override]
+
+    candidates = []
+    appdata = os.environ.get("APPDATA", "")
+    if appdata:
+        candidates.append(Path(appdata) / "npm/node_modules/openclaw/openclaw.mjs")
+    for prefix in ("/usr/local/lib", "/usr/lib", "/opt/homebrew/lib"):
+        candidates.append(Path(prefix) / "node_modules/openclaw/openclaw.mjs")
+    candidates.append(Path.home() / ".npm-global/lib/node_modules/openclaw/openclaw.mjs")
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return ["node", str(candidate)]
+        except OSError:
+            continue
+
+    try:
+        found = subprocess.run(["npm", "root", "-g"], capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=30)
+        if found.returncode == 0:
+            candidate = Path(found.stdout.strip()) / "openclaw/openclaw.mjs"
+            if candidate.is_file():
+                return ["node", str(candidate)]
+    except Exception:
+        pass
+
+    # Last resort: a launcher shim on PATH.
+    launcher = shutil.which("openclaw")
+    if launcher:
+        return [launcher]
+
+    raise RuntimeError(
+        "OpenClaw CLI not found. Install it with `npm install -g openclaw`, or set "
+        "OPENCLAW_CLI to the openclaw executable or to openclaw.mjs.")
+
+
 def telegram_bridge_post(tg: dict, text: str) -> dict:
     channel_id = tg.get("channelId", "")
     if not channel_id:
         raise RuntimeError("Missing Telegram channelId")
-    cli = Path(os.environ.get("APPDATA", "")) / "npm/node_modules/openclaw/openclaw.mjs"
-    command = ["node", str(cli), "message", "send", "--channel=telegram",
+    try:
+        cli = resolve_openclaw_cli()
+    except RuntimeError as exc:
+        return {"status": "pending", "reason": "bridge-cli-missing", "detail": str(exc)}
+    command = [*cli, "message", "send", "--channel=telegram",
                f"--target={channel_id}", f"--message={text}", "--json"]
     try:
         result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True,
@@ -1022,6 +1077,7 @@ def assert_posting_ready(config: dict) -> None:
     if mode == "bridge":
         if not has_channel:
             raise RuntimeError("Missing Telegram bridge channelId.")
+        resolve_openclaw_cli()
         return
     if mode == "direct":
         token_env = tg.get("tokenEnv", "")

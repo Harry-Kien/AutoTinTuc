@@ -46,13 +46,28 @@ python scripts/fastnews247_source_probe.py         # kiểm tra nguồn RSS
 
 Chọn bằng trường `posting.telegram.mode` trong `config/fastnews247.sources.json`.
 
-### `mode: "bridge"` — mặc định, dùng trên Windows
+### `mode: "bridge"` — mặc định, dùng cho cả Windows lẫn VPS
 
 Đẩy qua OpenClaw CLI để token không bao giờ rời khỏi OpenClaw. Đây là thiết kế gốc và
-là đường đang chạy thật trên máy Windows. Hạn chế: bridge dò CLI qua `%APPDATA%`, biến
-chỉ tồn tại trên Windows — nên đường này **không chạy trên Linux**.
+là đường được khuyến nghị.
 
-### `mode: "direct"` — dùng trên VPS Linux
+Trước đây bridge dò CLI cứng qua `%APPDATA%` nên chỉ chạy được trên Windows. Nay
+`resolve_openclaw_cli()` dò theo thứ tự:
+
+1. Biến môi trường `OPENCLAW_CLI` (ưu tiên cao nhất, dùng khi cài ở chỗ lạ)
+2. Các vị trí module toàn cục: `%APPDATA%\npm\...` (Windows), `/usr/local/lib`,
+   `/usr/lib`, `/opt/homebrew/lib`, `~/.npm-global/lib/...`
+3. Hỏi `npm root -g`
+4. Cuối cùng mới đến shim `openclaw` trên PATH
+
+Thứ tự này có chủ ý: luôn ưu tiên `node openclaw.mjs` thay vì shim. Trên Windows shim là
+`openclaw.CMD`, dùng nó sẽ đổi hành vi của bản Windows đang chạy tốt, **và** đẩy tiêu đề
+tin — do nguồn bên thứ ba kiểm soát — qua luật trích dẫn của `cmd.exe`.
+
+Nếu thiếu OpenClaw, `assert_posting_ready()` báo lỗi to và rõ ngay từ đầu, kèm hướng dẫn
+cài. Còn nếu mất CLI giữa chừng thì chỉ trả `pending`, không làm sập cả lượt chạy.
+
+### `mode: "direct"` — phương án dự phòng, không cần OpenClaw
 
 Gọi thẳng `api.telegram.org/bot<token>/sendMessage`, token đọc từ biến môi trường khai
 báo ở `tokenEnv`. Chỉ dùng thư viện chuẩn, nên VPS chỉ cần Python 3 — không cần cài
@@ -87,7 +102,33 @@ Thử gửi một tin thật khi đã sẵn sàng:
 python scripts/fastnews247_mvp.py --test-telegram "ping"
 ```
 
-## Triển khai VPS (sau khi đã chọn hướng ở trên)
+## Triển khai VPS
+
+### Bước 1 — cài OpenClaw (cho `mode: "bridge"`)
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt-get install -y nodejs
+sudo npm install -g openclaw
+
+openclaw onboard                 # cấu hình kênh Telegram tại đây
+openclaw channels status         # phải thấy Telegram OK
+```
+
+Kiểm tra bot tìm thấy CLI:
+
+```bash
+python3 -c "import sys; sys.path.insert(0,'scripts'); \
+import fastnews247_mvp as b; print(b.resolve_openclaw_cli())"
+```
+
+Nếu cài ở vị trí không chuẩn, chỉ đường thẳng cho nó trong `.env`:
+
+```
+OPENCLAW_CLI=/duong/dan/toi/openclaw.mjs
+```
+
+### Bước 2 — cài bot
 
 ```bash
 sudo useradd -r -s /usr/sbin/nologin fastnews
