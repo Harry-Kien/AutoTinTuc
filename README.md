@@ -146,7 +146,23 @@ Thử gửi một tin thật khi đã sẵn sàng:
 python scripts/fastnews247_mvp.py --test-telegram "ping"
 ```
 
-## Triển khai VPS
+## Triển khai VPS — cách nhanh
+
+Một lệnh trên VPS Debian/Ubuntu:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Harry-Kien/AutoTinTuc/main/deploy/install.sh | sudo bash
+```
+
+Script tự làm: gói hệ thống, Node 22, OpenClaw, tài khoản `fastnews`, clone mã nguồn,
+tạo thư mục và phân quyền, chạy test, cài systemd unit. Chạy lại được nhiều lần để cập
+nhật — không ghi đè `.env`, không đụng `storage/`.
+
+Nó **cố ý dừng lại** trước 3 việc cần con người: `openclaw onboard` (đăng nhập cần trình
+duyệt), điền `.env`, và gửi thử một tin thật trước khi bật lịch. Script in rõ 3 bước đó
+khi chạy xong.
+
+## Triển khai VPS — làm thủ công từng bước
 
 ### Bước 1 — cài OpenClaw (cho `mode: "bridge"`)
 

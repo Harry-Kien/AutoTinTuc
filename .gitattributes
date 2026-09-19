@@ -1,0 +1,17 @@
+# Files that Linux executes or parses must keep LF, whatever core.autocrlf says
+# on the machine that commits them. A CRLF shebang fails on the VPS with
+# "bad interpreter: /usr/bin/env bash^M", and systemd units misparse.
+*.sh            text eol=lf
+*.service       text eol=lf
+*.timer         text eol=lf
+.env.example    text eol=lf
+
+# Windows runners keep CRLF
+*.cmd           text eol=crlf
+*.ps1           text eol=crlf
+
+# Portable
+*.py            text
+*.pyw           text
+*.json          text
+*.md            text
