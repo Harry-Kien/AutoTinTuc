@@ -26,6 +26,13 @@
       "channelId": "@fastnews247vn"
     }
   },
+  "editorial": {
+    "mode": "translate",
+    "maxLlmCallsPerRun": 1,
+    "model": "openai/gpt-5.5",
+    "sessionKey": "agent:main:fastnews247-editor",
+    "timeoutSeconds": 180
+  },
   "fetching": {
     "feedWorkers": 8
   },

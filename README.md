@@ -42,6 +42,50 @@ python scripts/fastnews247_mvp.py --test-telegram "ping"   # thử kết nối T
 python scripts/fastnews247_source_probe.py         # kiểm tra nguồn RSS
 ```
 
+## Ba chế độ biên tập
+
+Chọn bằng `editorial.mode`. Mặc định là `translate` — không gọi LLM, không tốn hạn mức.
+
+| mode | Cách hoạt động | Hạn mức tiêu tốn |
+|---|---|---|
+| `translate` | Google Translate + kiểm tra ngặt (như cũ) | 0 |
+| `auto` | Dịch máy trước; **chỉ** gọi LLM để cứu tin sắp bị loại | Thấp |
+| `openclaw` | LLM viết trước, dịch máy là dự phòng | Cao nhất |
+
+`auto` tồn tại vì lý do rất thực tế. LLM chạy trên hạn mức gói ChatGPT, mà
+`vietnamese_editorial` được gọi cho **mọi ứng viên**, không phải chỉ bài sắp đăng:
+
+```
+timer 15 phút = 96 lượt chạy/ngày
+  LLM cho mọi bài kiểm tra : 96 × maxArticleChecksPerRun(6) = 576 lượt gọi/ngày
+  LLM chỉ để cứu tin bị loại: ≤ maxLlmCallsPerRun(1) × 96   =  96 lượt gọi/ngày
+```
+
+Nên có `editorial.maxLlmCallsPerRun` (mặc định 1) chặn cứng số lượt gọi mỗi lần chạy.
+
+**LLM không được nới lỏng bất kỳ cổng kiểm tra nào.** Bản viết lại vẫn phải qua đúng
+những bài kiểm tra như đường dịch máy: phải là tiếng Việt, và mọi con số trong tiêu đề
+lẫn tóm tắt phải có sẵn trong nguồn. Bịa một con số là bị loại. LLM được phép viết câu
+hay hơn, không được phép thêm dữ kiện.
+
+Nội dung bài đi qua `--message-file` chứ không qua dòng lệnh — tránh giới hạn độ dài và
+tránh để văn bản từ trang báo bên thứ ba chạm vào luật trích dẫn của shell.
+
+Hỏng ở bất kỳ khâu nào (thiếu OpenClaw, quá thời gian, trả về không phải JSON) đều trả
+rỗng và bỏ tin, đúng như cách đường dịch máy đang làm — không bao giờ đăng bừa.
+
+```json
+"editorial": {
+  "mode": "auto",
+  "maxLlmCallsPerRun": 1,
+  "model": "openai/gpt-5.5",
+  "sessionKey": "agent:main:fastnews247-editor",
+  "timeoutSeconds": 180
+}
+```
+
+`sessionKey` riêng để phiên biên tập không làm bẩn phiên chính của agent.
+
 ## Hai đường gửi Telegram
 
 Chọn bằng trường `posting.telegram.mode` trong `config/fastnews247.sources.json`.

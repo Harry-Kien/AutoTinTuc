@@ -866,13 +866,176 @@ def shorten_title(title: str, limit: int = 320) -> str:
     return " ".join(kept).strip()
 
 
-def draft_post(item: dict, score: int, tags: list[str]) -> tuple[str, list[str]]:
+EDITORIAL_PROMPT = """Ban la bien tap vien tin tai chinh tieng Viet cua kenh "Tin nhanh 247".
+
+Viet lai ban tin duoi day sang tieng Viet tu nhien, ngan gon, dung giong bao chi.
+
+RANG BUOC BAT BUOC:
+- Chi dung thong tin co trong NGUON. Tuyet doi khong them so lieu, ty le, ngay thang,
+  ten rieng hay nhan dinh nao khong co trong nguon.
+- Giu nguyen moi con so xuat hien trong nguon, khong lam tron, khong doi don vi.
+- Khong dua loi khuyen dau tu, khong du doan gia.
+- Khong chen URL.
+- Tieu de toi da 220 ky tu. Tom tat 1-2 cau, toi da 520 ky tu.
+
+Tra ve DUNG mot doi tuong JSON, khong kem giai thich, khong kem dau ``:
+{"title": "...", "summary": "..."}
+
+=== NGUON ===
+Tieu de goc: {source_title}
+Noi dung goc:
+{source_body}
+"""
+
+
+def _extract_agent_text(stdout: str) -> str:
+    """Pull the assistant reply out of `openclaw agent --json` output."""
+    decoder = json.JSONDecoder()
+    best = ""
+    for index, char in enumerate(stdout):
+        if char != "{":
+            continue
+        try:
+            payload, _ = decoder.raw_decode(stdout[index:])
+        except ValueError:
+            continue
+        for key in ("text", "reply", "message", "content", "output", "result"):
+            value = payload.get(key) if isinstance(payload, dict) else None
+            if isinstance(value, str) and len(value) > len(best):
+                best = value
+            elif isinstance(value, dict):
+                for inner in ("text", "content", "message"):
+                    nested = value.get(inner)
+                    if isinstance(nested, str) and len(nested) > len(best):
+                        best = nested
+    return best or stdout
+
+
+def _extract_json_object(text: str) -> dict:
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            payload, _ = decoder.raw_decode(text[index:])
+        except ValueError:
+            continue
+        if isinstance(payload, dict) and "title" in payload:
+            return payload
+    return {}
+
+
+def openclaw_rewrite(item: dict, cfg: dict) -> tuple[str, str]:
+    """Ask the OpenClaw agent for a Vietnamese rewrite.
+
+    Fails closed: any error returns ("", "") so the caller drops the item, which
+    is exactly what the machine-translation path does when it cannot be trusted.
+    The result is then held to the SAME fact checks as that path - the LLM is
+    allowed to write better prose, never to introduce facts.
+    """
+    source_title = strip_urls(item.get("title", ""))
+    sentences = item.get("source_sentences") or source_summary_sentences(item)
+    source_body = " ".join(sentences)[:4000]
+    if not source_title or not source_body:
+        return "", ""
+
+    prompt = EDITORIAL_PROMPT.replace("{source_title}", source_title).replace(
+        "{source_body}", source_body)
+
+    try:
+        cli = resolve_openclaw_cli()
+    except RuntimeError:
+        return "", ""
+
+    handle, prompt_path = tempfile.mkstemp(suffix=".txt", prefix="fastnews-editorial-")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(prompt)
+        # --message-file keeps third-party article text off the command line.
+        command = [*cli, "agent", "--message-file", prompt_path, "--json"]
+        if cfg.get("model"):
+            command += ["--model", str(cfg["model"])]
+        if cfg.get("sessionKey"):
+            command += ["--session-key", str(cfg["sessionKey"])]
+        timeout = int(cfg.get("timeoutSeconds", 180))
+        command += ["--timeout", str(timeout)]
+        try:
+            result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True,
+                                    encoding="utf-8", errors="replace",
+                                    timeout=timeout + 30)
+        except subprocess.TimeoutExpired:
+            return "", ""
+    finally:
+        try:
+            os.unlink(prompt_path)
+        except OSError:
+            pass
+
+    payload = _extract_json_object(_extract_agent_text(result.stdout))
+    title = strip_urls(str(payload.get("title", ""))).strip().rstrip(" .")
+    summary = strip_urls(str(payload.get("summary", ""))).strip()
+    if not title or not summary:
+        return "", ""
+
+    # Same gates the translation path applies - the LLM gets no extra latitude.
+    if not looks_vietnamese(title) or not looks_vietnamese(summary):
+        return "", ""
+    allowed = _fact_numbers(source_title) | _fact_numbers(source_body)
+    if not _fact_numbers(title).issubset(allowed):
+        return "", ""
+    if not _fact_numbers(summary).issubset(allowed):
+        return "", ""
+    return title, summary
+
+
+def editorial_for(item: dict, config: dict | None = None,
+                  budget: dict | None = None) -> tuple[str, str]:
+    """Pick the editorial path for one item.
+
+    editorial.mode in config:
+      "translate" (default) - today's behaviour, no LLM, no quota cost
+      "auto"                - translate first; LLM only to rescue a dropped item
+      "openclaw"            - LLM first, translate as the fallback
+
+    "auto" exists because the LLM runs on a ChatGPT subscription quota. Calling
+    it for every candidate would be maxArticleChecksPerRun calls per run; here
+    it is capped by editorial.maxLlmCallsPerRun (default 1).
+    """
+    cfg = (config or {}).get("editorial", {})
+    mode = cfg.get("mode", "translate")
+
+    def spend() -> bool:
+        if budget is None:
+            return True
+        if budget.get("remaining", 0) <= 0:
+            return False
+        budget["remaining"] -= 1
+        return True
+
+    if mode == "openclaw":
+        if spend():
+            title, summary = openclaw_rewrite(item, cfg)
+            if title and summary:
+                return title, summary
+        return vietnamese_editorial(item)
+
+    title, summary = vietnamese_editorial(item)
+    if title and summary:
+        return title, summary
+    if mode == "auto" and spend():
+        return openclaw_rewrite(item, cfg)
+    return "", ""
+
+
+
+def draft_post(item: dict, score: int, tags: list[str], config: dict | None = None,
+               budget: dict | None = None) -> tuple[str, list[str]]:
     category = item.get("category", "")
     banking = category == "vietnam_market" and any(term_matches(normalize_text(item.get("title", "")), marker) for marker in ("ngân hàng", "lãi suất", "tiền gửi"))
     if banking and not any(term_matches(normalize_text(item.get("title", "")), marker) for marker in ("cổ phiếu", "vn-index", "chứng khoán")):
         tags = [tag for tag in tags if tag != "#VNINDEX"] + ["#NGANHANG"]
     flags, market_label = market_flags(item, tags)
-    title, summary = vietnamese_editorial(item)
+    title, summary = editorial_for(item, config, budget)
     title = shorten_title(title, limit=220)
     summary = shorten_title(summary, limit=520)
     issues = headline_quality_issues(title, item)
@@ -1107,6 +1270,8 @@ def prune_state(state: dict, duplicate_window_hours: int) -> dict:
 
 
 def run_once(config: dict, post: bool = False) -> int:
+    editorial_budget = {"remaining": int(
+        config.get("editorial", {}).get("maxLlmCallsPerRun", 1))}
     run_started = time.time()
     config = json.loads(json.dumps(config))
     config["posting"]["telegram"]["enabled"] = bool(post)
@@ -1189,7 +1354,8 @@ def run_once(config: dict, post: bool = False) -> int:
         else:
             item["article_text"] = item.get("summary", "")
             item["source_article_verified"] = True
-        draft, quality_issues = draft_post(item, item["score"], item["tags"])
+        draft, quality_issues = draft_post(item, item["score"], item["tags"],
+                                           config, editorial_budget)
         if quality_issues:
             rejected.append(f"{item['source']}: {','.join(quality_issues)} :: {item['title'][:120]}")
             continue
