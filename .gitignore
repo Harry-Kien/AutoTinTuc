@@ -1,0 +1,23 @@
+# Secrets - never commit
+.env
+*.env
+!.env.example
+
+# Runtime state (per-deployment, must not be shared between machines)
+storage/
+outputs/
+logs/
+*.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

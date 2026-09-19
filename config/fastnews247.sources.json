@@ -1,0 +1,410 @@
+{
+  "channel": {
+    "name": "Tin nhanh 247",
+    "language": "vi",
+    "timezone": "Asia/Saigon",
+    "draftOutput": "outputs/fastnews247/latest_drafts.md",
+    "stateDb": "storage/fastnews247/state.json"
+  },
+  "posting": {
+    "minimumScoreToPost": 4,
+    "minimumScoreToDraft": 4,
+    "duplicateWindowHours": 72,
+    "maximumAgeMinutes": 240,
+    "futureToleranceMinutes": 15,
+    "requirePublishedTime": true,
+    "maxPostsPerRun": 1,
+    "requireVietnameseBeforePosting": true,
+    "requireSourceName": true,
+    "requireSourceArticle": true,
+    "maxArticleChecksPerRun": 6,
+    "telegram": {
+      "enabled": true,
+      "mode": "bridge",
+      "tokenEnv": "FASTNEWS247_TELEGRAM_BOT_TOKEN",
+      "channelEnv": "FASTNEWS247_TELEGRAM_CHANNEL_ID",
+      "channelId": "@fastnews247vn"
+    }
+  },
+  "fetching": {
+    "feedWorkers": 8
+  },
+  "articleContent": {
+    "preferHtml": true,
+    "timeoutSeconds": 8,
+    "maxBytes": 2000000,
+    "minimumTextChars": 240,
+    "maximumTextChars": 12000
+  },
+  "assets": {
+    "gold": [
+      "gold",
+      "xauusd",
+      "xau",
+      "vàng",
+      "vang",
+      "kitco",
+      "bullion"
+    ],
+    "oil": [
+      "oil",
+      "crude",
+      "brent",
+      "wti",
+      "opec",
+      "eia",
+      "dầu",
+      "dau"
+    ],
+    "btc": [
+      "bitcoin",
+      "btc",
+      "crypto",
+      "ethereum",
+      "eth",
+      "binance",
+      "coinbase",
+      "spot bitcoin etf",
+      "btc etf",
+      "bitcoin etf"
+    ],
+    "usdRates": [
+      "fed",
+      "fomc",
+      "powell",
+      "cpi",
+      "ppi",
+      "nfp",
+      "nonfarm",
+      "rate",
+      "interest",
+      "yield",
+      "dxy",
+      "usd",
+      "lãi suất",
+      "lai suat",
+      "lạm phát",
+      "lam phat"
+    ],
+    "vietnamMarket": [
+      "vn-index",
+      "vnindex",
+      "hose",
+      "hnx",
+      "ngân hàng",
+      "ngan hang",
+      "bất động sản",
+      "bat dong san",
+      "tỷ giá",
+      "ty gia",
+      "chứng khoán",
+      "chung khoan"
+    ],
+    "warGeo": [
+      "war",
+      "conflict",
+      "missile",
+      "attack",
+      "iran",
+      "israel",
+      "russia",
+      "ukraine",
+      "red sea",
+      "chiến sự",
+      "chien su",
+      "chiến tranh",
+      "chien tranh"
+    ],
+    "forexFx": [
+      "forex",
+      "fx",
+      "eurusd",
+      "gbpusd",
+      "usdjpy",
+      "usd/jpy",
+      "eur/usd",
+      "gbp/usd",
+      "audusd",
+      "aud/usd",
+      "usdcad",
+      "usd/cad",
+      "usdchf",
+      "usd/chf",
+      "nzdusd",
+      "nzd/usd",
+      "eurjpy",
+      "eur/jpy",
+      "gbpjpy",
+      "gbp/jpy",
+      "currency",
+      "currencies",
+      "pips",
+      "central bank",
+      "ecb",
+      "boj",
+      "boe",
+      "thị trường ngoại hối",
+      "ngoại hối",
+      "ty gia",
+      "tỷ giá"
+    ]
+  },
+  "highImpactTerms": [
+    "breaking",
+    "urgent",
+    "cpi",
+    "fomc",
+    "fed",
+    "powell",
+    "nfp",
+    "nonfarm",
+    "rate decision",
+    "pce",
+    "payrolls",
+    "jobless claims",
+    "retail sales",
+    "ism",
+    "pmi",
+    "gdp",
+    "opec",
+    "eia",
+    "crude inventories",
+    "sec",
+    "hack",
+    "exchange",
+    "sanction",
+    "missile",
+    "attack",
+    "lãi suất",
+    "lai suat",
+    "lạm phát",
+    "lam phat",
+    "tỷ giá",
+    "ty gia",
+    "vn-index",
+    "spot bitcoin etf",
+    "btc etf",
+    "bitcoin etf",
+    "forex",
+    "fx",
+    "central bank",
+    "ecb",
+    "boj",
+    "boe",
+    "dxy",
+    "yields"
+  ],
+  "blockedTerms": [
+    "meme coin",
+    "giveaway",
+    "airdrop",
+    "casino",
+    "lottery",
+    "sure profit",
+    "guaranteed profit",
+    "chắc chắn thắng",
+    "chac chan thang",
+    "vào lệnh ngay",
+    "vao lenh ngay"
+  ],
+  "weakContextTerms": [
+    "report finds",
+    "new report finds",
+    "should have known",
+    "explainer",
+    "opinion",
+    "price forecast",
+    "outlook",
+    "preview",
+    "what to know",
+    "silicon valley bank"
+  ],
+  "feeds": [
+    {
+      "name": "VnExpress Kinh Doanh",
+      "url": "https://vnexpress.net/rss/kinh-doanh.rss",
+      "category": "vietnam_market",
+      "priority": 3
+    },
+    {
+      "name": "CafeF Thi Truong Chung Khoan",
+      "url": "https://cafef.vn/thi-truong-chung-khoan.rss",
+      "category": "vietnam_market",
+      "priority": 4
+    },
+    {
+      "name": "CafeF Tai Chinh Ngan Hang",
+      "url": "https://cafef.vn/tai-chinh-ngan-hang.rss",
+      "category": "vietnam_market",
+      "priority": 4
+    },
+    {
+      "name": "FXStreet News",
+      "url": "https://www.fxstreet.com/rss/news",
+      "category": "forex_macro",
+      "priority": 5
+    },
+    {
+      "name": "CoinDesk",
+      "url": "https://www.coindesk.com/arc/outboundfeeds/rss/",
+      "category": "crypto",
+      "priority": 4
+    },
+    {
+      "name": "Cointelegraph",
+      "url": "https://cointelegraph.com/rss",
+      "category": "crypto",
+      "priority": 4
+    },
+    {
+      "name": "BBC Business",
+      "url": "https://feeds.bbci.co.uk/news/business/rss.xml",
+      "category": "world_macro",
+      "priority": 3,
+      "region": "global",
+      "sourceTier": "tier1"
+    },
+    {
+      "name": "BBC Asia",
+      "url": "https://feeds.bbci.co.uk/news/world/asia/rss.xml",
+      "category": "world_macro",
+      "priority": 3,
+      "region": "asia",
+      "sourceTier": "tier1"
+    },
+    {
+      "name": "BBC Europe",
+      "url": "https://feeds.bbci.co.uk/news/world/europe/rss.xml",
+      "category": "world_macro",
+      "priority": 3,
+      "region": "europe",
+      "sourceTier": "tier1"
+    },
+    {
+      "name": "BBC Middle East",
+      "url": "https://feeds.bbci.co.uk/news/world/middle_east/rss.xml",
+      "category": "war_geo",
+      "priority": 3,
+      "region": "middle_east",
+      "sourceTier": "tier1"
+    },
+    {
+      "name": "BBC Africa",
+      "url": "https://feeds.bbci.co.uk/news/world/africa/rss.xml",
+      "category": "world_macro",
+      "priority": 3,
+      "region": "africa",
+      "sourceTier": "tier1"
+    },
+    {
+      "name": "BBC Latin America",
+      "url": "https://feeds.bbci.co.uk/news/world/latin_america/rss.xml",
+      "category": "world_macro",
+      "priority": 3,
+      "region": "latin_america",
+      "sourceTier": "tier1"
+    },
+    {
+      "name": "Al Jazeera",
+      "url": "https://www.aljazeera.com/xml/rss/all.xml",
+      "category": "war_geo",
+      "priority": 3,
+      "region": "global",
+      "sourceTier": "tier1"
+    },
+    {
+      "name": "MarketWatch MarketPulse",
+      "url": "https://feeds.content.dowjones.io/public/rss/mw_marketpulse",
+      "category": "world_macro",
+      "priority": 4
+    },
+    {
+      "name": "MarketWatch Real-Time Headlines",
+      "url": "https://feeds.content.dowjones.io/public/rss/mw_realtimeheadlines",
+      "category": "world_macro",
+      "priority": 4
+    },
+    {
+      "name": "CNBC Economy",
+      "url": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+      "category": "world_macro",
+      "priority": 4
+    },
+    {
+      "name": "CNBC Finance",
+      "url": "https://www.cnbc.com/id/10000664/device/rss/rss.html",
+      "category": "world_macro",
+      "priority": 4
+    },
+    {
+      "name": "Yahoo Finance",
+      "url": "https://finance.yahoo.com/news/rssindex",
+      "category": "world_macro",
+      "priority": 3
+    },
+    {
+      "name": "OilPrice",
+      "url": "https://oilprice.com/rss/main",
+      "category": "commodities",
+      "priority": 4
+    },
+    {
+      "name": "Federal Reserve Press Releases",
+      "url": "https://www.federalreserve.gov/feeds/press_all.xml",
+      "category": "official_macro",
+      "priority": 5,
+      "region": "north_america",
+      "sourceTier": "official"
+    },
+    {
+      "name": "European Central Bank Press Releases",
+      "url": "https://www.ecb.europa.eu/rss/press.html",
+      "category": "official_macro",
+      "priority": 5,
+      "region": "europe",
+      "sourceTier": "official"
+    },
+    {
+      "name": "Bank of England News",
+      "url": "https://www.bankofengland.co.uk/rss/news",
+      "category": "official_macro",
+      "priority": 5
+    },
+    {
+      "name": "Bank of Canada Press Releases",
+      "url": "https://www.bankofcanada.ca/content_type/press-releases/feed/",
+      "category": "official_macro",
+      "priority": 5,
+      "region": "north_america",
+      "sourceTier": "official"
+    },
+    {
+      "name": "Reserve Bank of Australia Media Releases",
+      "url": "https://www.rba.gov.au/rss/rss-cb-media-releases.xml",
+      "category": "official_macro",
+      "priority": 5,
+      "region": "oceania",
+      "sourceTier": "official"
+    },
+    {
+      "name": "Bank of Japan Updates",
+      "url": "https://www.boj.or.jp/en/rss/whatsnew.xml",
+      "category": "official_macro",
+      "priority": 5,
+      "region": "asia",
+      "sourceTier": "official"
+    },
+    {
+      "name": "EIA Today in Energy",
+      "url": "https://www.eia.gov/rss/todayinenergy.xml",
+      "category": "commodities",
+      "priority": 4
+    },
+    {
+      "name": "MarketWatch Top Stories",
+      "url": "https://feeds.content.dowjones.io/public/rss/mw_topstories",
+      "category": "world_macro",
+      "priority": 4
+    }
+  ]
+}

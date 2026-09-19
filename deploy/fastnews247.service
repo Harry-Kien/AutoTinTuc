@@ -1,0 +1,25 @@
+[Unit]
+Description=Tin nhanh 247 - one news fetch/draft/post cycle
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=fastnews
+WorkingDirectory=/opt/AutoTinTuc
+EnvironmentFile=/opt/AutoTinTuc/.env
+ExecStart=/opt/AutoTinTuc/deploy/run_once.sh
+
+# The script already takes storage/fastnews247/worker.lock, so overlapping
+# timer firings are safe; this just keeps a stuck run from piling up.
+TimeoutStartSec=600
+
+# Hardening - the bot only needs to read feeds and write under its own tree.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/AutoTinTuc/logs /opt/AutoTinTuc/storage /opt/AutoTinTuc/outputs
+
+[Install]
+WantedBy=multi-user.target

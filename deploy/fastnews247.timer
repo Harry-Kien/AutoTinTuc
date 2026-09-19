@@ -1,0 +1,13 @@
+[Unit]
+Description=Run Tin nhanh 247 on a schedule
+
+[Timer]
+# Every 15 minutes. config/fastnews247.sources.json caps maxPostsPerRun=1 and
+# maximumAgeMinutes=240, so a tighter interval mostly burns requests.
+OnBootSec=3min
+OnUnitActiveSec=15min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
