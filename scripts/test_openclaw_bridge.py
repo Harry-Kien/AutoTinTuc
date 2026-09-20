@@ -37,8 +37,15 @@ def main() -> int:
     saved_env = {k: os.environ.get(k) for k in ("OPENCLAW_CLI", "APPDATA", "HOME", "PATH")}
     saved_which = shutil.which
     saved_home = Path.home
+    saved_run = bot.subprocess.run
 
     try:
+        # `npm root -g` must not reach a real install, or a host that genuinely
+        # has OpenClaw resolves through that branch and never exercises the
+        # fallbacks below. Pretend npm is unavailable.
+        def no_npm(*_a, **_k):
+            raise FileNotFoundError("npm stubbed out")
+        bot.subprocess.run = no_npm
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             # Isolate: no launcher on PATH, no home-dir install, no real APPDATA.
@@ -106,6 +113,7 @@ def main() -> int:
     finally:
         shutil.which = saved_which
         bot.shutil.which = saved_which
+        bot.subprocess.run = saved_run
         Path.home = saved_home  # type: ignore[assignment]
         for key, value in saved_env.items():
             if value is None:

@@ -27,7 +27,7 @@
     }
   },
   "editorial": {
-    "mode": "translate",
+    "mode": "auto",
     "maxLlmCallsPerRun": 1,
     "model": "openai/gpt-5.5",
     "sessionKey": "agent:main:fastnews247-editor",
