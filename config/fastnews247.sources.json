@@ -358,6 +358,21 @@
       "region": "india"
     },
     {
+      "name": "Al Monitor",
+      "url": "https://www.al-monitor.com/rss",
+      "category": "war_geo",
+      "priority": 5,
+      "region": "middle_east"
+    },
+    {
+      "name": "Guardian World",
+      "url": "https://www.theguardian.com/world/rss",
+      "category": "war_geo",
+      "priority": 4,
+      "region": "global",
+      "sourceTier": "tier1"
+    },
+    {
       "name": "VnExpress Kinh Doanh",
       "url": "https://vnexpress.net/rss/kinh-doanh.rss",
       "category": "vietnam_market",
@@ -505,6 +520,50 @@
       "url": "https://coingape.com/feed/",
       "category": "crypto",
       "priority": 3
+    },
+    {
+      "name": "Jerusalem Post",
+      "url": "https://www.jpost.com/rss/rssfeedsfrontpage.aspx",
+      "category": "war_geo",
+      "priority": 4,
+      "region": "middle_east"
+    },
+    {
+      "name": "Tehran Times",
+      "url": "https://www.tehrantimes.com/rss",
+      "category": "war_geo",
+      "priority": 4,
+      "region": "middle_east"
+    },
+    {
+      "name": "France24 Middle East",
+      "url": "https://www.france24.com/en/middle-east/rss",
+      "category": "war_geo",
+      "priority": 4,
+      "region": "middle_east",
+      "sourceTier": "tier1"
+    },
+    {
+      "name": "DW World",
+      "url": "https://rss.dw.com/rdf/rss-en-world",
+      "category": "war_geo",
+      "priority": 3,
+      "region": "global",
+      "sourceTier": "tier1"
+    },
+    {
+      "name": "Defense News",
+      "url": "https://www.defensenews.com/arc/outboundfeeds/rss/?outputType=xml",
+      "category": "war_geo",
+      "priority": 4,
+      "region": "us"
+    },
+    {
+      "name": "Military Times",
+      "url": "https://www.militarytimes.com/arc/outboundfeeds/rss/?outputType=xml",
+      "category": "war_geo",
+      "priority": 3,
+      "region": "us"
     }
   ]
 }
