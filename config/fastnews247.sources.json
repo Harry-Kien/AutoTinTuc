@@ -10,14 +10,14 @@
     "minimumScoreToPost": 4,
     "minimumScoreToDraft": 4,
     "duplicateWindowHours": 72,
-    "maximumAgeMinutes": 240,
+    "maximumAgeMinutes": 480,
     "futureToleranceMinutes": 15,
     "requirePublishedTime": true,
-    "maxPostsPerRun": 1,
+    "maxPostsPerRun": 2,
     "requireVietnameseBeforePosting": true,
     "requireSourceName": true,
     "requireSourceArticle": true,
-    "maxArticleChecksPerRun": 6,
+    "maxArticleChecksPerRun": 15,
     "telegram": {
       "enabled": true,
       "mode": "bridge",
@@ -228,12 +228,6 @@
   ],
   "feeds": [
     {
-      "name": "VnExpress Kinh Doanh",
-      "url": "https://vnexpress.net/rss/kinh-doanh.rss",
-      "category": "vietnam_market",
-      "priority": 3
-    },
-    {
       "name": "CafeF Thi Truong Chung Khoan",
       "url": "https://cafef.vn/thi-truong-chung-khoan.rss",
       "category": "vietnam_market",
@@ -252,14 +246,52 @@
       "priority": 5
     },
     {
-      "name": "CoinDesk",
-      "url": "https://www.coindesk.com/arc/outboundfeeds/rss/",
+      "name": "Cointelegraph",
+      "url": "https://cointelegraph.com/rss",
       "category": "crypto",
       "priority": 4
     },
     {
-      "name": "Cointelegraph",
-      "url": "https://cointelegraph.com/rss",
+      "name": "Al Jazeera",
+      "url": "https://www.aljazeera.com/xml/rss/all.xml",
+      "category": "war_geo",
+      "priority": 3,
+      "region": "global",
+      "sourceTier": "tier1"
+    },
+    {
+      "name": "CNBC Economy",
+      "url": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+      "category": "world_macro",
+      "priority": 4
+    },
+    {
+      "name": "CafeF Bat Dong San",
+      "url": "https://cafef.vn/bat-dong-san.rss",
+      "category": "vietnam_market",
+      "priority": 4
+    },
+    {
+      "name": "Vietstock Co Phieu",
+      "url": "https://vietstock.vn/830/chung-khoan/co-phieu.rss",
+      "category": "vietnam_market",
+      "priority": 4
+    },
+    {
+      "name": "Decrypt",
+      "url": "https://decrypt.co/feed",
+      "category": "crypto",
+      "priority": 3
+    },
+    {
+      "name": "VnExpress Kinh Doanh",
+      "url": "https://vnexpress.net/rss/kinh-doanh.rss",
+      "category": "vietnam_market",
+      "priority": 3
+    },
+    {
+      "name": "CoinDesk",
+      "url": "https://www.coindesk.com/arc/outboundfeeds/rss/",
       "category": "crypto",
       "priority": 4
     },
@@ -286,56 +318,6 @@
       "priority": 3,
       "region": "europe",
       "sourceTier": "tier1"
-    },
-    {
-      "name": "BBC Middle East",
-      "url": "https://feeds.bbci.co.uk/news/world/middle_east/rss.xml",
-      "category": "war_geo",
-      "priority": 3,
-      "region": "middle_east",
-      "sourceTier": "tier1"
-    },
-    {
-      "name": "BBC Africa",
-      "url": "https://feeds.bbci.co.uk/news/world/africa/rss.xml",
-      "category": "world_macro",
-      "priority": 3,
-      "region": "africa",
-      "sourceTier": "tier1"
-    },
-    {
-      "name": "BBC Latin America",
-      "url": "https://feeds.bbci.co.uk/news/world/latin_america/rss.xml",
-      "category": "world_macro",
-      "priority": 3,
-      "region": "latin_america",
-      "sourceTier": "tier1"
-    },
-    {
-      "name": "Al Jazeera",
-      "url": "https://www.aljazeera.com/xml/rss/all.xml",
-      "category": "war_geo",
-      "priority": 3,
-      "region": "global",
-      "sourceTier": "tier1"
-    },
-    {
-      "name": "MarketWatch MarketPulse",
-      "url": "https://feeds.content.dowjones.io/public/rss/mw_marketpulse",
-      "category": "world_macro",
-      "priority": 4
-    },
-    {
-      "name": "MarketWatch Real-Time Headlines",
-      "url": "https://feeds.content.dowjones.io/public/rss/mw_realtimeheadlines",
-      "category": "world_macro",
-      "priority": 4
-    },
-    {
-      "name": "CNBC Economy",
-      "url": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
-      "category": "world_macro",
-      "priority": 4
     },
     {
       "name": "CNBC Finance",
@@ -408,10 +390,10 @@
       "priority": 4
     },
     {
-      "name": "MarketWatch Top Stories",
-      "url": "https://feeds.content.dowjones.io/public/rss/mw_topstories",
-      "category": "world_macro",
-      "priority": 4
+      "name": "Thanh Nien Kinh Te",
+      "url": "https://thanhnien.vn/rss/kinh-te.rss",
+      "category": "vietnam_market",
+      "priority": 3
     }
   ]
 }
