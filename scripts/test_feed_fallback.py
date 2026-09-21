@@ -37,9 +37,21 @@ def main() -> int:
 
         print("trang bai hong + mo ta RSS day du -> dung mo ta")
         bot._source_article_text_http = lambda item, **k: ("", "article-text-too-thin")
-        text, reason = bot.source_article_text({"summary": LONG})
+        item = {"summary": LONG}
+        text, reason = bot.source_article_text(item)
         check("cuu duoc tin", len(text) >= 240, len(text))
-        check("danh dau nguon la feed", reason == "feed-description", reason)
+        # run_once lam: `if article_issue: reject`. Reason khac rong = bi loai,
+        # nen thanh cong BAT BUOC phai tra reason rong. Day la loi that da xay ra.
+        check("reason RONG khi thanh cong (run_once se nhan)", reason == "", repr(reason))
+        check("ghi lai nguon van ban tren item",
+              item.get("source_text_origin") == "feed-description", item)
+
+        print("mo phong dung cach run_once quyet dinh")
+        def run_once_gate(it):
+            t, r = bot.source_article_text(it)
+            return "LOAI" if r else ("NHAN" if t else "LOAI")
+        check("tin cuu duoc -> run_once NHAN", run_once_gate({"summary": LONG}) == "NHAN")
+        check("mo ta ngan -> run_once LOAI", run_once_gate({"summary": SHORT}) == "LOAI")
 
         print("mo ta RSS qua ngan -> VAN bi loai (khong ha chuan)")
         text, reason = bot.source_article_text({"summary": SHORT})
@@ -62,8 +74,12 @@ def main() -> int:
         check("cat dung max_chars", len(text) == 1000, len(text))
 
         print("chap nhan ca truong description")
-        text, reason = bot.source_article_text({"description": LONG})
-        check("doc duoc truong description", reason == "feed-description", reason)
+        item = {"description": LONG}
+        text, reason = bot.source_article_text(item)
+        check("doc duoc truong description",
+              len(text) >= 240 and reason == ""
+              and item.get("source_text_origin") == "feed-description",
+              (len(text), reason, item.get("source_text_origin")))
 
         print("loc HTML trong mo ta")
         text, _ = bot.source_article_text({"summary": "<p>" + LONG + "</p><script>x</script>"})

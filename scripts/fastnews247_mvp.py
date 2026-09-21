@@ -332,7 +332,11 @@ def source_article_text(
     feed_body = strip_html(item.get("summary") or item.get("description") or "")
     feed_body = re.sub(r"\s+", " ", feed_body).strip()
     if len(feed_body) >= min_chars:
-        return feed_body[:max_chars], "feed-description"
+        # run_once treats ANY non-empty reason as a rejection, so a successful
+        # fallback has to report an empty reason exactly like the page path.
+        # Which route supplied the text is recorded on the item instead.
+        item["source_text_origin"] = "feed-description"
+        return feed_body[:max_chars], ""
     return text, reason
 
 
