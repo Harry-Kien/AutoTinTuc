@@ -1118,8 +1118,17 @@ def draft_post(item: dict, score: int, tags: list[str], config: dict | None = No
         display_hashtags(tags),
     ]
     post = "\n".join(line for line in lines if line is not None).strip()
+    # The gate stays on the body: nothing the editor wrote may contain a URL.
     if URL_PATTERN.search(post):
         return "", ["url-in-public-copy"]
+
+    # Only after that check may a link be added, and only when asked for.
+    # Off by default, because whether the channel shows links is an editorial
+    # decision about its own voice, not something to change silently.
+    if (config or {}).get("posting", {}).get("includeSourceLink", False):
+        link = strip_html(item.get("link", "")).strip()
+        if re.match(r"^https?://", link, flags=re.IGNORECASE):
+            post = f"{post}\n🔗 {link}"
     return post, []
 
 
@@ -1421,6 +1430,14 @@ def run_once(config: dict, post: bool = False) -> int:
         if quality_issues:
             rejected.append(f"{item['source']}: {','.join(quality_issues)} :: {item['title'][:120]}")
             continue
+        # One source publishing a burst should not take every slot in a run.
+        # 0 disables the cap.
+        per_source = int(config["posting"].get("maxPostsPerSourcePerRun", 0))
+        if per_source > 0:
+            taken = sum(1 for chosen in selected if chosen.get("source") == item.get("source"))
+            if taken >= per_source:
+                rejected.append(f"{item['source']}: source-quota-reached :: {item['title'][:120]}")
+                continue
         item["draft"] = draft
         selected.append(item)
         if len(selected) >= config["posting"]["maxPostsPerRun"]:

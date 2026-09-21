@@ -24,7 +24,9 @@
       "tokenEnv": "FASTNEWS247_TELEGRAM_BOT_TOKEN",
       "channelEnv": "FASTNEWS247_TELEGRAM_CHANNEL_ID",
       "channelId": "@fastnews247vn"
-    }
+    },
+    "includeSourceLink": true,
+    "maxPostsPerSourcePerRun": 1
   },
   "editorial": {
     "mode": "auto",
