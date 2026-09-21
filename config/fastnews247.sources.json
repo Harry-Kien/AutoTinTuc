@@ -314,6 +314,50 @@
       "priority": 5
     },
     {
+      "name": "Guardian Business",
+      "url": "https://www.theguardian.com/uk/business/rss",
+      "category": "world_macro",
+      "priority": 4,
+      "region": "uk",
+      "sourceTier": "tier1"
+    },
+    {
+      "name": "SCMP Business",
+      "url": "https://www.scmp.com/rss/92/feed",
+      "category": "world_macro",
+      "priority": 4,
+      "region": "asia",
+      "sourceTier": "tier1"
+    },
+    {
+      "name": "Straits Times Business",
+      "url": "https://www.straitstimes.com/news/business/rss.xml",
+      "category": "world_macro",
+      "priority": 4,
+      "region": "asia"
+    },
+    {
+      "name": "CNA Business",
+      "url": "https://www.channelnewsasia.com/api/v1/rss-outbound-feed?_format=xml&category=6936",
+      "category": "world_macro",
+      "priority": 4,
+      "region": "asia"
+    },
+    {
+      "name": "Economic Times Markets",
+      "url": "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
+      "category": "world_macro",
+      "priority": 4,
+      "region": "india"
+    },
+    {
+      "name": "Livemint Markets",
+      "url": "https://www.livemint.com/rss/markets",
+      "category": "world_macro",
+      "priority": 4,
+      "region": "india"
+    },
+    {
       "name": "VnExpress Kinh Doanh",
       "url": "https://vnexpress.net/rss/kinh-doanh.rss",
       "category": "vietnam_market",
@@ -423,6 +467,43 @@
       "name": "Thanh Nien Kinh Te",
       "url": "https://thanhnien.vn/rss/kinh-te.rss",
       "category": "vietnam_market",
+      "priority": 3
+    },
+    {
+      "name": "NPR Business",
+      "url": "https://feeds.npr.org/1006/rss.xml",
+      "category": "world_macro",
+      "priority": 3,
+      "region": "us",
+      "sourceTier": "tier1"
+    },
+    {
+      "name": "DW Business",
+      "url": "https://rss.dw.com/rdf/rss-en-bus",
+      "category": "world_macro",
+      "priority": 3,
+      "region": "europe",
+      "sourceTier": "tier1"
+    },
+    {
+      "name": "France24 Economy",
+      "url": "https://www.france24.com/en/economy/rss",
+      "category": "world_macro",
+      "priority": 3,
+      "region": "europe",
+      "sourceTier": "tier1"
+    },
+    {
+      "name": "Business Standard Markets",
+      "url": "https://www.business-standard.com/rss/markets-106.rss",
+      "category": "world_macro",
+      "priority": 3,
+      "region": "india"
+    },
+    {
+      "name": "CoinGape",
+      "url": "https://coingape.com/feed/",
+      "category": "crypto",
       "priority": 3
     }
   ]
