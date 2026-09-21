@@ -17,7 +17,7 @@
     "requireVietnameseBeforePosting": true,
     "requireSourceName": true,
     "requireSourceArticle": true,
-    "maxArticleChecksPerRun": 15,
+    "maxArticleChecksPerRun": 30,
     "telegram": {
       "enabled": true,
       "mode": "bridge",
@@ -28,7 +28,7 @@
   },
   "editorial": {
     "mode": "auto",
-    "maxLlmCallsPerRun": 1,
+    "maxLlmCallsPerRun": 2,
     "model": "openai/gpt-5.5",
     "sessionKey": "agent:main:fastnews247-editor",
     "timeoutSeconds": 180
