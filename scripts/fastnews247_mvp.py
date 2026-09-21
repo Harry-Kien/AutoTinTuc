@@ -1128,7 +1128,9 @@ def draft_post(item: dict, score: int, tags: list[str], config: dict | None = No
     if (config or {}).get("posting", {}).get("includeSourceLink", False):
         link = strip_html(item.get("link", "")).strip()
         if re.match(r"^https?://", link, flags=re.IGNORECASE):
-            post = f"{post}\n🔗 {link}"
+            # Must use the same prefix telegram_post's guard exempts, or the
+            # send raises and the item is recorded as never-confirmed.
+            post = f"{post}\n{SOURCE_LINK_PREFIX}{link}"
     return post, []
 
 
@@ -1141,13 +1143,30 @@ def looks_vietnamese(text: str) -> bool:
     return any(word in f" {lower} " for word in common_words)
 
 
+SOURCE_LINK_PREFIX = "🔗 "
+
+
+def editorial_body(text: str) -> str:
+    """The post minus the deliberate source-link line, if present.
+
+    The URL guard below exists to stop editorial copy - which is machine
+    translated or LLM written - from smuggling a link into the channel. A
+    source link added on purpose by draft_post is a different thing, so the
+    guard inspects the body and leaves that one trailing line alone.
+    """
+    lines = text.splitlines()
+    if lines and lines[-1].startswith(SOURCE_LINK_PREFIX):
+        return "\n".join(lines[:-1])
+    return text
+
+
 def telegram_post(config: dict, text: str) -> None:
     tg = config["posting"].get("telegram", {})
     if not tg.get("enabled"):
         return
     if config["posting"].get("requireVietnameseBeforePosting", True) and "Cần OpenClaw viết lại" in text:
         raise RuntimeError("Refusing to post: draft still needs Vietnamese editorial rewrite.")
-    if URL_PATTERN.search(text):
+    if URL_PATTERN.search(editorial_body(text)):
         raise RuntimeError("Refusing to post: public copy contains a URL.")
     if re.search(r"\bICT\b", text, flags=re.IGNORECASE):
         raise RuntimeError("Refusing to post: public time must not include ICT.")
