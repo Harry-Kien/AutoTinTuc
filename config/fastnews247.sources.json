@@ -13,7 +13,7 @@
     "maximumAgeMinutes": 480,
     "futureToleranceMinutes": 15,
     "requirePublishedTime": true,
-    "maxPostsPerRun": 2,
+    "maxPostsPerRun": 3,
     "requireVietnameseBeforePosting": true,
     "requireSourceName": true,
     "requireSourceArticle": true,
