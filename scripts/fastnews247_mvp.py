@@ -1053,13 +1053,17 @@ def editorial_for(item: dict, config: dict | None = None,
         if spend():
             title, summary = openclaw_rewrite(item, cfg)
             if title and summary:
+                item["editorial_path"] = "openclaw"
                 return title, summary
+        item["editorial_path"] = "translate"
         return vietnamese_editorial(item)
 
     title, summary = vietnamese_editorial(item)
     if title and summary:
+        item["editorial_path"] = "translate"
         return title, summary
     if mode == "auto" and spend():
+        item["editorial_path"] = "openclaw"
         return openclaw_rewrite(item, cfg)
     return "", ""
 
@@ -1077,6 +1081,27 @@ def draft_post(item: dict, score: int, tags: list[str], config: dict | None = No
     summary = shorten_title(summary, limit=520)
     issues = headline_quality_issues(title, item)
     issues.extend(summary_quality_issues(summary, item, title))
+
+    # Machine translation can produce Vietnamese that reads badly enough to
+    # fail the gates - "main-event-not-explicit" and friends. The LLM was only
+    # being offered items translation dropped entirely, so these were thrown
+    # away with rescue budget still unspent. Give it one attempt on the same
+    # item, and hold the result to the identical gates.
+    if issues and item.get("editorial_path") == "translate":
+        cfg = (config or {}).get("editorial", {})
+        if cfg.get("mode", "translate") in ("auto", "openclaw") \
+                and budget is not None and budget.get("remaining", 0) > 0:
+            budget["remaining"] -= 1
+            retry_title, retry_summary = openclaw_rewrite(item, cfg)
+            if retry_title and retry_summary:
+                retry_title = shorten_title(retry_title, limit=220)
+                retry_summary = shorten_title(retry_summary, limit=520)
+                retry_issues = headline_quality_issues(retry_title, item)
+                retry_issues.extend(summary_quality_issues(retry_summary, item, retry_title))
+                if not retry_issues:
+                    item["editorial_path"] = "openclaw-retry"
+                    title, summary, issues = retry_title, retry_summary, []
+
     if issues:
         return "", issues
     label = f"🚨 Tin nhanh 247 | {flags} {market_label}"
