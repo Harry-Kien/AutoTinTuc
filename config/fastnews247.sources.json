@@ -284,6 +284,36 @@
       "priority": 3
     },
     {
+      "name": "CafeBiz",
+      "url": "https://cafebiz.vn/rss/cau-chuyen-kinh-doanh.rss",
+      "category": "vietnam_market",
+      "priority": 3
+    },
+    {
+      "name": "CafeF Vi Mo",
+      "url": "https://cafef.vn/vi-mo-dau-tu.rss",
+      "category": "vietnam_market",
+      "priority": 4
+    },
+    {
+      "name": "VietnamNet Kinh Doanh",
+      "url": "https://vietnamnet.vn/rss/kinh-doanh.rss",
+      "category": "vietnam_market",
+      "priority": 3
+    },
+    {
+      "name": "CNBC Markets",
+      "url": "https://www.cnbc.com/id/20910258/device/rss/rss.html",
+      "category": "world_macro",
+      "priority": 4
+    },
+    {
+      "name": "ForexLive",
+      "url": "https://www.forexlive.com/feed/",
+      "category": "forex_macro",
+      "priority": 5
+    },
+    {
       "name": "VnExpress Kinh Doanh",
       "url": "https://vnexpress.net/rss/kinh-doanh.rss",
       "category": "vietnam_market",

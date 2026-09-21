@@ -310,6 +310,39 @@ def source_article_text(
     min_chars: int = 240,
     max_chars: int = 12_000,
 ) -> tuple[str, str]:
+    """Return verified source text for an item.
+
+    Tries the article URL first. When that page cannot be read - some
+    publishers render the body with JavaScript, others block non-browser
+    clients - fall back to the feed's own description, but only when the
+    publisher put a real body there.
+
+    This is not a relaxation of the quality bar. The fallback is held to the
+    same min_chars threshold, and the text still comes from the publisher; it
+    simply arrives inside the feed instead of the page. ForexLive, for
+    instance, ships roughly 4,300 characters of article text per RSS item
+    while its article pages read as empty to a non-browser client.
+    """
+    text, reason = _source_article_text_http(
+        item, timeout=timeout, max_bytes=max_bytes,
+        min_chars=min_chars, max_chars=max_chars)
+    if text:
+        return text, reason
+
+    feed_body = strip_html(item.get("summary") or item.get("description") or "")
+    feed_body = re.sub(r"\s+", " ", feed_body).strip()
+    if len(feed_body) >= min_chars:
+        return feed_body[:max_chars], "feed-description"
+    return text, reason
+
+
+def _source_article_text_http(
+    item: dict,
+    timeout: int = 12,
+    max_bytes: int = 2_000_000,
+    min_chars: int = 240,
+    max_chars: int = 12_000,
+) -> tuple[str, str]:
     """Return text fetched from the article URL, or a fail-closed reason."""
     link = strip_html(item.get("link", ""))
     if not re.match(r"^https?://", link, flags=re.IGNORECASE):
