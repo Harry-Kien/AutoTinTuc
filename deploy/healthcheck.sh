@@ -17,8 +17,8 @@ export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 BOT_DIR="$HOME/AutoTinTuc"
 ALERT_TARGET="${FASTNEWS247_ALERT_TARGET:-}"
 QUIET_HOURS_LIMIT=12      # no post for this long -> problem
-WEEK_QUOTA_FLOOR=15       # percent
-TOKEN_DAYS_FLOOR=2
+WEEK_QUOTA_FLOOR=20       # percent
+TOKEN_DAYS_FLOOR=3
 
 problems=()
 note() { printf '  %-26s %s\n' "$1" "$2"; }
