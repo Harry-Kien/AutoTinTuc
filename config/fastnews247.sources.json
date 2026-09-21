@@ -25,7 +25,7 @@
       "channelEnv": "FASTNEWS247_TELEGRAM_CHANNEL_ID",
       "channelId": "@fastnews247vn"
     },
-    "includeSourceLink": true,
+    "includeSourceLink": false,
     "maxPostsPerSourcePerRun": 1
   },
   "editorial": {

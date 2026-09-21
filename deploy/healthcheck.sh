@@ -39,6 +39,14 @@ else
   problems+=("Chua tung dang tin nao")
 fi
 
+# --- chu ky that bai -------------------------------------------------------
+# Mot chu ky co the dang duoc tin roi van thoat ma loi, nghia la co tin KHAC
+# khong gui duoc. Kieu hong nay tung keo dai mot tieng ma nguong "12 gio khong
+# co tin" khong he bat duoc, vi van co tin di qua.
+fails=$(journalctl --user -u fastnews247.service --since "2 hours ago" --no-pager -o cat 2>/dev/null | grep -c "Failed with result")
+note "chu ky loi 2h qua" "$fails"
+[ "$fails" -ge 2 ] && problems+=("$fails chu ky thoat ma loi trong 2 gio - co tin khong gui duoc")
+
 # --- dich vu --------------------------------------------------------------
 gw=$(curl -s -f -m 10 http://127.0.0.1:18789/healthz 2>/dev/null)
 note "gateway" "${gw:-KHONG PHAN HOI}"
