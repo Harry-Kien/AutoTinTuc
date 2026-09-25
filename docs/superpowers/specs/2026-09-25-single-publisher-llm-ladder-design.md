@@ -22,6 +22,13 @@ Ngày: 2026-09-25 · Trạng thái: chờ duyệt
 - Lượt chạy gần nhất: 19 ứng viên bị loại vì dịch máy hỏng, 23 bị loại vì hết
   lượt kiểm tra bài (`article-check-budget-exhausted`).
 - API key `openai:default` trả về 401 (hỏng).
+- Laptop vẫn chạy task `OpenClaw Fast News 247` mỗi 5 phút, cố đăng qua bridge
+  lên cùng kênh (31 lần treo, 1 lần gửi thành công). Task `OpenClaw Gateway` (chạy
+  khi đăng nhập) vẫn bật và đã chạy lúc 11:15 hôm nay; khi chạy, nó tranh
+  `getUpdates` với gateway trên VPS.
+- `openclaw status --usage` trả về `OpenAI: Unsupported provider`: không đọc được
+  hạn mức tuần của subscription.
+- Coin369 là tin nhanh **tiếng Việt** (87–600 ký tự/bài, có tiền tố `🔹 10:35:`).
 
 ## 2. Mục tiêu
 
@@ -84,7 +91,7 @@ Cấu hình mới trong `config/fastnews247.sources.json`:
     "enabled": true,
     "model": "openai/gpt-5.5",
     "maxCallsPerHour": 10,
-    "minWeeklyQuotaPercent": 50,
+    "minUsableProfiles": 2,
     "quotaCacheMaxAgeMinutes": 120,
     "timeoutSeconds": 180
   }
@@ -144,18 +151,25 @@ Các chế độ cũ `translate`, `auto`, `openclaw` vẫn giữ để chạy đ
   ở chế độ `ladder`.
 - **Điều kiện chặn:** chỉ dùng khi đủ cả ba điều sau:
   - file `subscription_quota.json` được ghi trong vòng 120 phút;
-  - hạn mức tuần còn ≥ 50%;
+  - còn ≥ 2 tài khoản OAuth **không** bị cooldown (`usableProfiles`);
   - số lần gọi trong giờ hiện tại < 10.
 
-  Thiếu file hoặc không đọc được thì coi như không dùng được.
+  Thiếu file hoặc không đọc được thì coi như không dùng được. Lý do không dùng
+  "hạn mức tuần ≥ 50%": OpenClaw không đọc được hạn mức tuần của OpenAI. Số tài
+  khoản còn dùng được là tín hiệu thay thế đo được, và giữ lại ít nhất một tài
+  khoản cho agent.
 
 ### C. Nguồn Coin369 (loại nguồn `telegram_public`)
 
 ```json
 {"name": "Coin369", "type": "telegram_public",
- "url": "https://t.me/s/coin369channel", "category": "crypto",
- "priority": 2, "sourceTier": "repost", "minimumTextChars": 120}
+ "url": "https://t.me/s/coin369channel", "category": "world_macro",
+ "priority": 2, "sourceTier": "repost", "minimumTextChars": 80}
 ```
+
+Kênh đăng cả tin vĩ mô, địa chính trị và thị trường, không chỉ crypto, nên để
+category `world_macro`. Ngưỡng độ dài để 80 ký tự vì nhiều bài chỉ dài 87–130 ký
+tự.
 
 **Bộ đọc trang** (dùng `HTMLParser` của thư viện chuẩn):
 - Đọc các khối `tgme_widget_message`:
@@ -170,9 +184,11 @@ Các chế độ cũ `translate`, `auto`, `openclaw` vẫn giữ để chạy đ
 - Ngưỡng độ dài lấy từ `minimumTextChars` của nguồn này.
 
 **Quan hệ với các nguồn gốc:**
-- Priority 2 cho điểm thấp hơn nguồn gốc. Nếu trong cùng một lượt có cả tin
-  Coin369 lẫn tin CoinDesk/Cointelegraph về cùng sự kiện, tin nguồn gốc được xếp
-  trước, còn `same_event` loại bản của Coin369.
+- Priority 2 cho điểm thấp hơn nguồn gốc, nên trong cùng một lượt tin nguồn gốc
+  được xếp và biên tập trước.
+- `same_event` so sánh từ ngữ trong tiêu đề, nên **không** nhận ra một tin tiếng
+  Việt và một tin tiếng Anh nói cùng một sự kiện. Vì vậy thêm chống trùng theo
+  tiếng Việt (mục D2).
 - Bài quảng cáo không khớp tài sản nào nên được 1 điểm và tự bị loại.
 - Nếu Telegram đổi HTML, bộ đọc trả về 0 tin, ghi cảnh báo nguồn, các nguồn khác
   vẫn chạy bình thường.
@@ -193,6 +209,25 @@ Description cho đúng.
 - `maxPostsPerRun` tăng từ 3 lên 6.
 - `maxArticleChecksPerRun` giữ 30.
 - `maxPostsPerSourcePerRun` giữ 1.
+
+### D2. Chặn chi phí và trùng lặp trong `run_once`
+
+- **Nhớ tin bị loại:** tin trượt cổng chất lượng được ghi vào `state["rejected"]`
+  và bỏ qua trong 60 phút (`posting.rejectRetryMinutes`). Nếu không có bước này,
+  cùng một tin hỏng bị viết lại, và phải trả tiền, mỗi 2 phút cho tới khi hết hạn
+  8 giờ.
+- **Giới hạn tin mỗi nguồn kiểm tra trước khi viết bài:** trước đây bước này nằm
+  sau `draft_post`, nên bot trả tiền viết những tin mà sau đó bị bỏ đi.
+- **Chống trùng theo tiếng Việt:** mỗi bài đã đăng lưu thêm `postedTitle` (tiêu đề
+  tiếng Việt đã đăng). Một tin bị coi là trùng nếu `same_event` khớp giữa tiêu đề
+  tiếng Việt của nó với một `postedTitle` trong 72 giờ, hoặc với tin khác đã chọn
+  trong cùng lượt. Việc so sánh diễn ra:
+  - **trước khi viết bài**, với tin nguồn có tiêu đề sẵn tiếng Việt (Coin369,
+    CafeF…), nên không tốn tiền;
+  - **sau khi viết bài**, với tin nguồn tiếng Anh.
+- **LLM được đọc nhiều bài gốc hơn:** ở chế độ `ladder`, LLM nhận tối đa 3.000 ký
+  tự bài gốc đã xác minh (`openai.sourceChars`) thay vì chỉ 2 câu đã chọn. Số liệu
+  vẫn chỉ được lấy từ đúng phần văn bản đã đưa cho LLM.
 
 ### E. Đăng thẳng qua Telegram
 
@@ -216,9 +251,11 @@ Description cho đúng.
   - `apiDisabledUntil` còn hiệu lực, hoặc `lastApiError` là 401/403/`insufficient_quota`;
   - chi tiêu hôm nay ≥ `dailyBudgetUsd`.
 
-**Ghi hạn mức subscription:**
-- Ghi `subscription_quota.json` gồm `{"at": <epoch>, "weekPercentLeft": N}`, lấy
-  từ `openclaw models status` mà script đã đọc sẵn.
+**Ghi trạng thái subscription:**
+- Ghi `subscription_quota.json` gồm `{"at": <epoch>, "usableProfiles": N}`. N là
+  số profile `openai:*=OAuth (...)` không có `[cooldown ...]` trong kết quả
+  `openclaw models status` mà script đã đọc sẵn.
+- Thêm cảnh báo khi thiếu `OPENAI_API_KEY`.
 
 ### G. Dọn OpenClaw (thao tác vận hành, không sửa code)
 
@@ -230,6 +267,8 @@ Description cho đúng.
 4. Bỏ `openai/gpt-5.4-pro` và `custom-localhost-20128/openclaw` khỏi danh sách
    fallback mặc định.
 5. Restart gateway, rồi đo lại RAM và thời gian phản hồi.
+6. Trên laptop: tắt task `OpenClaw Fast News 247` và `OpenClaw Gateway` (chỉ tắt,
+   không xoá). Cần người dùng đồng ý trước.
 
 ## 5. Xử lý lỗi
 
