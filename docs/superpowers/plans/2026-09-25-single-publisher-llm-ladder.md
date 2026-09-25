@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the Python bot the only publisher to @fastnews247vn, writing every post with the paid OpenAI API first (gpt-5.5 for 5-star items, gpt-5.4-mini otherwise), falling back to a guarded subscription call and then machine translation, under a hard daily spend cap.
+**Goal:** Make the Python bot the only publisher to @fastnews247vn, writing every post with the guarded ChatGPT subscription first (free), handing any miss straight to the paid OpenAI API (gpt-5.5 for 5-star items, gpt-5.4-mini otherwise) under a hard daily spend cap, with machine translation as the floor.
+
+> **Amended 2026-09-25 at the user's request:** tier order changed from "API first, subscription as backup" to "subscription first, API right behind" (`editorial.order: ["subscription", "openai"]`). Guards: ≥2 usable OAuth accounts, ≤10 subscription calls/hour, 15-minute pause after a silent subscription reply.
 
 **Architecture:** A new standard-library module `scripts/fastnews247_llm.py` holds the transports (OpenAI Responses API, `openclaw agent exec`) and the spend ledger; it knows nothing about news. `scripts/fastnews247_mvp.py` gains an `editorial.mode: "ladder"` that builds the prompt, picks the tier, and holds every tier's output to the existing fact gates. The same file gains a Telegram channel source, conditional GET with a feed cache, cost guards in `run_once`, and Telegram 429 handling. Deployment moves the VPS timer to 2 minutes and posting to the direct Bot API.
 
@@ -16,7 +18,8 @@
 - Every LLM tier is held to the same gates as translation: `_fact_numbers` subset of the source, `looks_vietnamese`, `headline_quality_issues`, `summary_quality_issues`. No tier may loosen them.
 - Secrets never appear on a command line, in logs, or in error strings: the OpenAI key goes only in the `Authorization` header; the Telegram token is redacted with `_redact_token`.
 - Budget values, verbatim from the spec: `dailyBudgetUsd` 3.0, `hotDailyBudgetUsd` 1.5, `hotMinScore` 5, `model` `gpt-5.4-mini`, `hotModel` `gpt-5.5`, prices per 1M tokens `gpt-5.4-mini` 0.75 in / 4.50 out, `gpt-5.5` 5.00 in / 30.00 out.
-- Subscription guard, verbatim: quota cache at most 120 minutes old, `usableProfiles` ≥ 2, at most 10 calls per Vietnam hour.
+- Tier order, verbatim: `editorial.order` `["subscription", "openai"]`, then translation. A subscription miss of any kind goes to the API at once; a paid draft that fails the fact gate goes to translation.
+- Subscription guard, verbatim: quota cache at most 120 minutes old, `usableProfiles` ≥ 2, at most 10 calls per Vietnam hour, paused 15 minutes (`pauseMinutesAfterFailure`) after a reply with nothing usable.
 - The Vietnam day and hour (UTC+7) are the budget and rate windows.
 - Tests follow the repo's style: offline, one file per concern under `scripts/test_*.py`, runnable as `python scripts/test_x.py`, exit 0 on pass. Stub network and subprocess; never call the real API or Telegram.
 - Keep `translate`, `auto`, `openclaw` modes and the `bridge` transport working. Windows and rollback use them.
@@ -613,23 +616,94 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 2: Ladder editorial mode
+### Task 2: Ladder editorial mode (subscription first, paid API right behind)
 
 **Files:**
+- Modify: `scripts/fastnews247_llm.py` (Ledger: subscription pause; `subscription_block_reason`: `paused`)
+- Modify: `scripts/test_llm_transport.py` (pause tests)
 - Modify: `scripts/fastnews247_mvp.py`: imports (after line 30), new constants after `CONFIG_PATH` (line 39), `openclaw_rewrite` (lines 965-1025), `editorial_for` (lines 1028-1069)
 - Test: `scripts/test_editorial_ladder.py`
 
 **Interfaces:**
-- Consumes (Task 1): `llm.Ledger`, `llm.cost_usd`, `llm.openai_editorial`, `llm.ApiError`, `llm.subscription_block_reason`, `llm.subscription_editorial`
+- Consumes (Task 1): `llm.Ledger`, `llm.cost_usd`, `llm.openai_editorial`, `llm.ApiError`, `llm.subscription_block_reason`, `llm.subscription_editorial`, `llm.vietnam_day`
 - Produces:
-  - `LEDGER_PATH = Path("storage/fastnews247/llm_ledger.json")`
-  - `QUOTA_PATH = Path("storage/fastnews247/subscription_quota.json")`
+  - `Ledger.subscription_paused(now) -> bool`
+  - `Ledger.pause_subscription(reason: str, now: float, seconds: float)`
+  - ledger fields `subscriptionPausedUntil`, `lastSubscriptionError`
+  - `subscription_block_reason` returns `"paused"` while paused (checked right after `disabled`)
+  - `LEDGER_PATH = Path("storage/fastnews247/llm_ledger.json")`, `QUOTA_PATH = Path("storage/fastnews247/subscription_quota.json")`
   - `_editorial_prompt(item: dict, body_chars: int = 0) -> tuple[str, str, str]` returns `(prompt, source_title, source_body)`
   - `_validated_rewrite(payload: dict, source_title: str, source_body: str) -> tuple[str, str]`
-  - `ladder_rewrite(item: dict, config: dict, now: float | None = None) -> tuple[str, str]`, which sets `item["editorial_path"]` to one of `openai-hot`, `openai`, `subscription`, `translate`, plus `item["editorial_model"]` on API tiers
+  - `ladder_rewrite(item: dict, config: dict, now: float | None = None) -> tuple[str, str]`, which sets `item["editorial_path"]` to one of `subscription`, `openai-hot`, `openai`, `translate`, plus `item["editorial_model"]` on LLM tiers
+  - config `editorial.order` (list of `"subscription"` / `"openai"`, default `["openai", "subscription"]`), `editorial.subscription.pauseMinutesAfterFailure` (default 15)
   - `editorial_for(item, config, budget)` dispatches `mode == "ladder"` to `ladder_rewrite`
 
-- [ ] **Step 1: Write the failing test**
+**Ladder rules** (spec section A/B as amended 2026-09-25 at the user's request):
+- Tiers run in `editorial.order`; the shipped config is `["subscription", "openai"]`, then translation.
+- Subscription skipped by its guard (disabled, paused, stale or missing quota file, fewer than `minUsableProfiles` usable accounts, hourly cap): go to the next tier at once.
+- Subscription gives **no usable reply** (empty stdout, timeout, non-JSON): pause the subscription for `pauseMinutesAfterFailure` minutes and go to the next tier at once, so later items do not wait on a dead tier.
+- Subscription reply **fails the fact gate**: record `subscription-gate-rejected` (no pause) and go to the next tier. The free tier's miss may still be rescued by a paid draft.
+- Paid API reply **fails the fact gate**: stop the LLM tiers and use translation. Never pay for a second opinion.
+- API transport error: fatal → disable the API for 30 minutes; either way go to the next tier.
+
+- [ ] **Step 1: Extend the Task 1 ledger (test first)**
+
+In `scripts/test_llm_transport.py`, inside the `with tempfile.TemporaryDirectory() as directory:` block, directly after the line `check("hourly cap", llm.subscription_block_reason(sub, empty, fresh, NOW) == "hourly-cap")`, add:
+
+```python
+            print("subscription pause")
+            paused = llm.Ledger(Path(directory) / "paused.json", load, save)
+            check("not paused by default", not paused.subscription_paused(NOW))
+            paused.pause_subscription("no-reply", NOW, 900)
+            check("paused inside the window", paused.subscription_paused(NOW + 899))
+            check("resumes after the window", not paused.subscription_paused(NOW + 900))
+            check("pause reason kept", paused.data["lastSubscriptionError"] == "no-reply")
+            check("block reason paused", llm.subscription_block_reason(sub, paused, fresh, NOW + 60) == "paused")
+            check("disabled still wins over paused",
+                  llm.subscription_block_reason(dict(sub, enabled=False), paused, fresh, NOW) == "disabled")
+            paused.save()
+            check("pause persisted",
+                  llm.Ledger(Path(directory) / "paused.json", load, save).subscription_paused(NOW + 60))
+```
+
+Run: `python scripts/test_llm_transport.py`
+Expected: FAIL. `AttributeError: 'Ledger' object has no attribute 'subscription_paused'`.
+
+In `scripts/fastnews247_llm.py`, in `Ledger.__init__`, extend `self.data` so it reads:
+
+```python
+        self.data = {
+            "days": raw.get("days", {}),
+            "subscriptionCalls": raw.get("subscriptionCalls", {}),
+            "apiDisabledUntil": float(raw.get("apiDisabledUntil", 0) or 0),
+            "lastApiError": raw.get("lastApiError", ""),
+            "subscriptionPausedUntil": float(raw.get("subscriptionPausedUntil", 0) or 0),
+            "lastSubscriptionError": raw.get("lastSubscriptionError", ""),
+        }
+```
+
+Add to `Ledger`, after `record_subscription_call`:
+
+```python
+    def subscription_paused(self, now: float) -> bool:
+        return now < self.data["subscriptionPausedUntil"]
+
+    def pause_subscription(self, reason: str, now: float, seconds: float) -> None:
+        self.data["subscriptionPausedUntil"] = now + seconds
+        self.data["lastSubscriptionError"] = reason
+```
+
+In `subscription_block_reason`, directly after the `disabled` check, add:
+
+```python
+    if ledger.subscription_paused(now):
+        return "paused"
+```
+
+Run: `python scripts/test_llm_transport.py`
+Expected: `All LLM transport tests passed.`
+
+- [ ] **Step 2: Write the failing ladder test**
 
 Create `scripts/test_editorial_ladder.py`:
 
@@ -637,10 +711,12 @@ Create `scripts/test_editorial_ladder.py`:
 """Offline tests for editorial.mode "ladder".
 
 The transports are stubbed on the llm module; the ledger is real and lives in
-a temporary ROOT. The contract: hot items get the strong model until its own
-budget runs out, the daily cap stops paid calls, dead keys stop being called,
-a model that invents facts falls to translation rather than another LLM, and
-the subscription is used only when the API cannot be and its guard allows.
+a temporary ROOT. The contract: with the shipped order the free subscription
+writes first and any failure hands the item to the paid API at once; a dead
+subscription is paused so later items do not wait on it; hot items get the
+strong model until its own budget runs out; the daily cap stops paid calls;
+dead keys stop being called; a paid draft that invents facts falls to
+translation instead of buying a second opinion.
 """
 from __future__ import annotations
 
@@ -659,15 +735,26 @@ failures: list[str] = []
 KEY_ENV = "TEST_LADDER_OPENAI_KEY"
 GOOD = {"title": "Vàng tăng 2,5% khi Fed giữ nguyên lãi suất",
         "summary": "Vàng tăng 2,5% hôm thứ Ba sau khi Fed giữ nguyên lãi suất, theo giới phân tích."}
+INVENTED = {"title": "Vàng tăng 7,9% khi Fed giữ nguyên lãi suất",
+            "summary": "Vàng tăng 7,9% hôm thứ Ba, theo giới phân tích."}
 TRANSLATED = ("Vàng tăng 2,5% sau quyết định của Fed", "Bản dịch máy của tin vàng hôm thứ Ba.")
-CONFIG = {"editorial": {
-    "mode": "ladder",
-    "openai": {"apiKeyEnv": KEY_ENV, "model": "gpt-5.4-mini", "hotModel": "gpt-5.5", "hotMinScore": 5,
-               "dailyBudgetUsd": 3.0, "hotDailyBudgetUsd": 1.5, "sourceChars": 3000,
-               "pricesPerMTok": {"gpt-5.4-mini": {"input": 0.75, "output": 4.50},
-                                 "gpt-5.5": {"input": 5.00, "output": 30.00}}},
-    "subscription": {"enabled": True, "model": "openai/gpt-5.5", "maxCallsPerHour": 1,
-                     "minUsableProfiles": 2, "quotaCacheMaxAgeMinutes": 120}}}
+
+
+def make_config(order, max_per_hour=10):
+    return {"editorial": {
+        "mode": "ladder",
+        "order": order,
+        "openai": {"apiKeyEnv": KEY_ENV, "model": "gpt-5.4-mini", "hotModel": "gpt-5.5", "hotMinScore": 5,
+                   "dailyBudgetUsd": 3.0, "hotDailyBudgetUsd": 1.5, "sourceChars": 3000,
+                   "pricesPerMTok": {"gpt-5.4-mini": {"input": 0.75, "output": 4.50},
+                                     "gpt-5.5": {"input": 5.00, "output": 30.00}}},
+        "subscription": {"enabled": True, "model": "openai/gpt-5.5", "maxCallsPerHour": max_per_hour,
+                         "minUsableProfiles": 2, "quotaCacheMaxAgeMinutes": 120,
+                         "pauseMinutesAfterFailure": 15}}}
+
+
+SUB_FIRST = make_config(["subscription", "openai"])
+API_FIRST = make_config(["openai", "subscription"])
 
 
 def check(name: str, condition: bool, detail: object = "") -> None:
@@ -697,144 +784,186 @@ class FakeApi:
 
 
 class FakeSubscription:
+    """reply None -> empty stdout (the tier gave nothing usable)."""
+
     def __init__(self, reply):
         self.reply, self.calls = reply, 0
 
     def __call__(self, prompt, cfg, cli):
         self.calls += 1
-        return json.dumps({"text": json.dumps(self.reply)})
+        return "" if self.reply is None else json.dumps({"text": json.dumps(self.reply)})
+
+
+def ledger_data(root: Path) -> dict:
+    return json.loads((root / bot.LEDGER_PATH).read_text(encoding="utf-8"))
 
 
 def ledger_day(root: Path) -> dict:
-    data = json.loads((root / bot.LEDGER_PATH).read_text(encoding="utf-8"))
-    return data["days"][llm.vietnam_day(time.time())]
+    return ledger_data(root)["days"][llm.vietnam_day(time.time())]
+
+
+def fresh_root(directory: str, quota: bool) -> Path:
+    root = Path(directory)
+    bot.ROOT = root
+    if quota:
+        (root / bot.QUOTA_PATH).parent.mkdir(parents=True, exist_ok=True)
+        (root / bot.QUOTA_PATH).write_text(json.dumps({"at": time.time(), "usableProfiles": 3}),
+                                           encoding="utf-8")
+    return root
+
+
+def install(api: FakeApi, sub: FakeSubscription) -> None:
+    llm.openai_editorial = api
+    llm.subscription_editorial = sub
 
 
 def main() -> int:
     saved = (llm.openai_editorial, llm.subscription_editorial, bot.vietnamese_editorial,
              bot.resolve_openclaw_cli, bot.ROOT)
     os.environ[KEY_ENV] = "sk-test-ladder"
+    bot.vietnamese_editorial = lambda it: TRANSLATED
+    bot.resolve_openclaw_cli = lambda: ["node", "/fake/openclaw.mjs"]
     try:
+        print("subscription first: healthy subscription writes, API untouched")
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            bot.ROOT = root
-            bot.vietnamese_editorial = lambda it: TRANSLATED
-            bot.resolve_openclaw_cli = lambda: ["node", "/fake/openclaw.mjs"]
-            sub = FakeSubscription(GOOD)
-            llm.subscription_editorial = sub
-
-            print("hot item -> strong model, counted as hot spend")
-            api = FakeApi(GOOD)
-            llm.openai_editorial = api
+            root = fresh_root(directory, quota=True)
+            api, sub = FakeApi(GOOD), FakeSubscription(GOOD)
+            install(api, sub)
             news = item(5)
-            title, summary = bot.editorial_for(news, CONFIG, {"remaining": 0})
-            check("LLM text used", (title, summary) == (GOOD["title"], GOOD["summary"]), title)
-            check("gpt-5.5 for 5 stars", api.calls[0]["model"] == "gpt-5.5", api.calls)
-            check("path openai-hot", news.get("editorial_path") == "openai-hot", news.get("editorial_path"))
+            title, summary = bot.editorial_for(news, SUB_FIRST, {"remaining": 0})
+            check("subscription text used", (title, summary) == (GOOD["title"], GOOD["summary"]), title)
+            check("path subscription", news.get("editorial_path") == "subscription", news.get("editorial_path"))
+            check("API not called", api.calls == [], api.calls)
+            check("free call costs nothing", ledger_day(root)["spendUsd"] == 0.0, ledger_day(root))
+            check("counted as subscription", ledger_day(root)["byTier"] == {"subscription": 1}, ledger_day(root))
+
+        print("subscription gives nothing -> paused, API at once, later items skip it")
+        with tempfile.TemporaryDirectory() as directory:
+            root = fresh_root(directory, quota=True)
+            api, sub = FakeApi(GOOD), FakeSubscription(None)
+            install(api, sub)
+            news = item(5)
+            title, _ = bot.editorial_for(news, SUB_FIRST, None)
+            check("API rescued the item", title == GOOD["title"] and news["editorial_path"] == "openai-hot",
+                  (title, news.get("editorial_path")))
+            check("hot item -> gpt-5.5", api.calls[0]["model"] == "gpt-5.5", api.calls)
+            data = ledger_data(root)
+            check("subscription paused ~15 min", data["subscriptionPausedUntil"] > time.time() + 800,
+                  data["subscriptionPausedUntil"])
+            news = item(4)
+            bot.editorial_for(news, SUB_FIRST, None)
+            check("paused subscription not called again", sub.calls == 1, sub.calls)
+            check("4-star -> gpt-5.4-mini", api.calls[1]["model"] == "gpt-5.4-mini", api.calls)
+            check("path openai", news.get("editorial_path") == "openai", news.get("editorial_path"))
             day = ledger_day(root)
-            check("spend 0.025", abs(day["spendUsd"] - 0.025) < 1e-9, day)
-            check("hot spend 0.025", abs(day["hotSpendUsd"] - 0.025) < 1e-9, day)
-            check("prompt carries article text, not just 2 sentences",
-                  "next inflation report" in api.calls[0]["prompt"], api.calls[0]["prompt"][-200:])
+            check("spend 0.025 + 0.00375", abs(day["spendUsd"] - 0.02875) < 1e-9, day)
+            check("hot spend only the hot call", abs(day["hotSpendUsd"] - 0.025) < 1e-9, day)
+            check("prompt carries article text", "next inflation report" in api.calls[0]["prompt"],
+                  api.calls[0]["prompt"][-200:])
             check("key never in prompt", "sk-test-ladder" not in api.calls[0]["prompt"])
 
-            print("4-star item -> mini model")
-            api = FakeApi(GOOD)
-            llm.openai_editorial = api
+        print("subscription invents a number -> API rewrites, no pause")
+        with tempfile.TemporaryDirectory() as directory:
+            root = fresh_root(directory, quota=True)
+            api, sub = FakeApi(GOOD), FakeSubscription(INVENTED)
+            install(api, sub)
             news = item(4)
-            bot.editorial_for(news, CONFIG, None)
-            check("gpt-5.4-mini for 4 stars", api.calls[0]["model"] == "gpt-5.4-mini", api.calls)
-            check("path openai", news.get("editorial_path") == "openai", news.get("editorial_path"))
+            title, _ = bot.editorial_for(news, SUB_FIRST, None)
+            check("API draft used", title == GOOD["title"] and news["editorial_path"] == "openai", title)
+            check("gate miss recorded", ledger_day(root)["errors"].get("subscription-gate-rejected") == 1,
+                  ledger_day(root))
+            check("gate miss does not pause", ledger_data(root)["subscriptionPausedUntil"] == 0)
 
-            print("hot budget spent -> hot item drops to mini")
-            ledger_path = root / bot.LEDGER_PATH
-            data = json.loads(ledger_path.read_text(encoding="utf-8"))
+        print("no quota file / hourly cap -> straight to API")
+        with tempfile.TemporaryDirectory() as directory:
+            root = fresh_root(directory, quota=False)
+            api, sub = FakeApi(GOOD), FakeSubscription(GOOD)
+            install(api, sub)
+            bot.editorial_for(item(4), SUB_FIRST, None)
+            check("no quota file -> subscription skipped", sub.calls == 0 and len(api.calls) == 1,
+                  (sub.calls, len(api.calls)))
+        with tempfile.TemporaryDirectory() as directory:
+            root = fresh_root(directory, quota=True)
+            api, sub = FakeApi(GOOD), FakeSubscription(GOOD)
+            install(api, sub)
+            capped = make_config(["subscription", "openai"], max_per_hour=1)
+            bot.editorial_for(item(4), capped, None)
+            news = item(4)
+            bot.editorial_for(news, capped, None)
+            check("hourly cap -> second item goes to API", sub.calls == 1 and len(api.calls) == 1
+                  and news["editorial_path"] == "openai", (sub.calls, len(api.calls)))
+
+        print("hot budget spent -> hot item drops to mini; daily cap -> translation")
+        with tempfile.TemporaryDirectory() as directory:
+            root = fresh_root(directory, quota=False)
+            api, sub = FakeApi(GOOD), FakeSubscription(GOOD)
+            install(api, sub)
+            bot.editorial_for(item(5), SUB_FIRST, None)
+            data = ledger_data(root)
             data["days"][llm.vietnam_day(time.time())]["hotSpendUsd"] = 1.5
-            ledger_path.write_text(json.dumps(data), encoding="utf-8")
-            api = FakeApi(GOOD)
-            llm.openai_editorial = api
-            bot.editorial_for(item(5), CONFIG, None)
-            check("mini once hot budget is gone", api.calls[0]["model"] == "gpt-5.4-mini", api.calls)
-
-            print("daily cap reached -> no paid call; no quota file -> translation")
-            data = json.loads(ledger_path.read_text(encoding="utf-8"))
+            (root / bot.LEDGER_PATH).write_text(json.dumps(data), encoding="utf-8")
+            bot.editorial_for(item(5), SUB_FIRST, None)
+            check("mini once hot budget is gone", api.calls[-1]["model"] == "gpt-5.4-mini", api.calls)
+            data = ledger_data(root)
             data["days"][llm.vietnam_day(time.time())]["spendUsd"] = 3.0
-            ledger_path.write_text(json.dumps(data), encoding="utf-8")
-            api = FakeApi(GOOD)
-            llm.openai_editorial = api
-            sub.calls = 0
+            (root / bot.LEDGER_PATH).write_text(json.dumps(data), encoding="utf-8")
+            calls_before = len(api.calls)
             news = item(4)
-            title, _ = bot.editorial_for(news, CONFIG, None)
-            check("API not called over cap", api.calls == [], api.calls)
-            check("subscription blocked without quota file", sub.calls == 0, sub.calls)
+            title, _ = bot.editorial_for(news, SUB_FIRST, None)
+            check("API not called over cap", len(api.calls) == calls_before, api.calls)
             check("translation used", title == TRANSLATED[0] and news["editorial_path"] == "translate", title)
 
-            print("subscription used when API is unavailable and the guard allows")
-            (root / bot.QUOTA_PATH).parent.mkdir(parents=True, exist_ok=True)
-            (root / bot.QUOTA_PATH).write_text(json.dumps({"at": time.time(), "usableProfiles": 3}),
-                                               encoding="utf-8")
-            news = item(4)
-            title, _ = bot.editorial_for(news, CONFIG, None)
-            check("subscription called once", sub.calls == 1, sub.calls)
-            check("subscription text used", title == GOOD["title"] and news["editorial_path"] == "subscription",
-                  (title, news.get("editorial_path")))
-            news = item(4)
-            bot.editorial_for(news, CONFIG, None)
-            check("hourly cap (1) respected", sub.calls == 1 and news["editorial_path"] == "translate", sub.calls)
-
+        print("paid draft that invents facts -> translation, subscription NOT tried after it")
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            bot.ROOT = root
-            sub.calls = 0
-
-            print("missing key -> recorded, no API call")
-            os.environ[KEY_ENV] = ""
-            api = FakeApi(GOOD)
-            llm.openai_editorial = api
+            root = fresh_root(directory, quota=True)
+            api, sub = FakeApi(INVENTED), FakeSubscription(GOOD)
+            install(api, sub)
             news = item(4)
-            bot.editorial_for(news, CONFIG, None)
-            check("no call without key", api.calls == [], api.calls)
-            check("no-api-key recorded", ledger_day(root)["errors"].get("no-api-key") == 1, ledger_day(root))
-            os.environ[KEY_ENV] = "sk-test-ladder"
-
-            print("dead key -> API switched off for 30 minutes")
-            api = FakeApi(error=llm.ApiError("invalid_api_key", fatal=True))
-            llm.openai_editorial = api
-            bot.editorial_for(item(4), CONFIG, None)
-            bot.editorial_for(item(4), CONFIG, None)
-            check("dead key called only once", len(api.calls) == 1, len(api.calls))
-            data = json.loads((root / bot.LEDGER_PATH).read_text(encoding="utf-8"))
-            check("lastApiError kept", data["lastApiError"] == "invalid_api_key", data["lastApiError"])
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            bot.ROOT = root
-            (root / bot.QUOTA_PATH).parent.mkdir(parents=True, exist_ok=True)
-            (root / bot.QUOTA_PATH).write_text(json.dumps({"at": time.time(), "usableProfiles": 3}),
-                                               encoding="utf-8")
-            sub.calls = 0
-
-            print("invented number -> translation, NOT another LLM")
-            api = FakeApi({"title": "Vàng tăng 7,9% khi Fed giữ nguyên lãi suất",
-                           "summary": "Vàng tăng 7,9% hôm thứ Ba, theo giới phân tích."})
-            llm.openai_editorial = api
-            news = item(4)
-            title, _ = bot.editorial_for(news, CONFIG, None)
-            check("fact gate rejects", title == TRANSLATED[0] and news["editorial_path"] == "translate", title)
-            check("subscription not tried after a gate failure", sub.calls == 0, sub.calls)
+            title, _ = bot.editorial_for(news, API_FIRST, None)
+            check("fact gate rejects paid draft", title == TRANSLATED[0] and news["editorial_path"] == "translate",
+                  title)
+            check("no second opinion bought", sub.calls == 0, sub.calls)
             check("gate-rejected recorded", ledger_day(root)["errors"].get("gate-rejected") == 1, ledger_day(root))
 
-            print("transient API error -> subscription (guard allows)")
+        print("API first: transient error -> subscription")
+        with tempfile.TemporaryDirectory() as directory:
+            root = fresh_root(directory, quota=True)
             api = FakeApi(error=llm.ApiError("rate_limit_exceeded", retryable=True))
-            llm.openai_editorial = api
+            sub = FakeSubscription(GOOD)
+            install(api, sub)
             news = item(4)
-            title, _ = bot.editorial_for(news, CONFIG, None)
+            bot.editorial_for(news, API_FIRST, None)
             check("fell to subscription", news["editorial_path"] == "subscription" and sub.calls == 1,
                   (news.get("editorial_path"), sub.calls))
-            data = json.loads((root / bot.LEDGER_PATH).read_text(encoding="utf-8"))
-            check("transient error does not disable API", data["apiDisabledUntil"] == 0, data["apiDisabledUntil"])
+            check("transient error does not disable API", ledger_data(root)["apiDisabledUntil"] == 0)
 
-        print("other modes untouched")
+        print("missing key / dead key")
+        with tempfile.TemporaryDirectory() as directory:
+            root = fresh_root(directory, quota=False)
+            os.environ[KEY_ENV] = ""
+            api, sub = FakeApi(GOOD), FakeSubscription(GOOD)
+            install(api, sub)
+            news = item(4)
+            bot.editorial_for(news, SUB_FIRST, None)
+            check("no call without key", api.calls == [] and news["editorial_path"] == "translate", api.calls)
+            check("no-api-key recorded", ledger_day(root)["errors"].get("no-api-key") == 1, ledger_day(root))
+            os.environ[KEY_ENV] = "sk-test-ladder"
+            api = FakeApi(error=llm.ApiError("invalid_api_key", fatal=True))
+            install(api, sub)
+            bot.editorial_for(item(4), SUB_FIRST, None)
+            bot.editorial_for(item(4), SUB_FIRST, None)
+            check("dead key called only once", len(api.calls) == 1, len(api.calls))
+            check("lastApiError kept", ledger_data(root)["lastApiError"] == "invalid_api_key")
+
+        print("default order is API first; other modes untouched")
+        with tempfile.TemporaryDirectory() as directory:
+            root = fresh_root(directory, quota=True)
+            api, sub = FakeApi(GOOD), FakeSubscription(GOOD)
+            install(api, sub)
+            no_order = make_config(["openai", "subscription"])
+            del no_order["editorial"]["order"]
+            bot.editorial_for(item(4), no_order, None)
+            check("no order key -> API first", len(api.calls) == 1 and sub.calls == 0, (len(api.calls), sub.calls))
         check("translate mode ignores ladder config",
               bot.editorial_for(item(4), {"editorial": {"mode": "translate"}}, None)[0] == TRANSLATED[0])
     finally:
@@ -854,12 +983,12 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 3: Run test to verify it fails**
 
 Run: `python scripts/test_editorial_ladder.py`
 Expected: `AttributeError: module 'fastnews247_mvp' has no attribute 'LEDGER_PATH'`
 
-- [ ] **Step 3: Implement**
+- [ ] **Step 4: Implement**
 
 In `scripts/fastnews247_mvp.py`, after `from pathlib import Path` (line 30) add:
 
@@ -875,7 +1004,7 @@ LEDGER_PATH = Path("storage/fastnews247/llm_ledger.json")
 QUOTA_PATH = Path("storage/fastnews247/subscription_quota.json")
 ```
 
-Replace the whole `openclaw_rewrite` function (lines 965-1025) with these three functions (the behaviour of `openclaw_rewrite` is unchanged, now through the shared helpers):
+Replace the whole `openclaw_rewrite` function (lines 965-1025) with the following functions (`openclaw_rewrite` behaves exactly as before, now through the shared helpers):
 
 ```python
 def _editorial_prompt(item: dict, body_chars: int = 0) -> tuple[str, str, str]:
@@ -959,12 +1088,11 @@ def openclaw_rewrite(item: dict, cfg: dict) -> tuple[str, str]:
 
 
 def ladder_rewrite(item: dict, config: dict, now: float | None = None) -> tuple[str, str]:
-    """editorial.mode "ladder": paid API, then subscription, then translation.
+    """editorial.mode "ladder": the LLM tiers in editorial.order, then translation.
 
-    Each LLM tier is held to _validated_rewrite here and to the headline and
-    summary gates in draft_post, so paying for a model buys better prose, never
-    looser checks. A model that answers with invented facts drops straight to
-    translation rather than getting a second LLM opinion.
+    Every LLM tier is held to _validated_rewrite here and to the headline and
+    summary gates in draft_post, so neither a free nor a paid model gets
+    looser checks than machine translation.
     """
     now = time.time() if now is None else now
     ledger = llm.Ledger(ROOT / LEDGER_PATH, load_json, save_json)
@@ -983,35 +1111,25 @@ def _ladder_llm(item: dict, cfg: dict, ledger: "llm.Ledger", now: float) -> tupl
     prompt, source_title, source_body = _editorial_prompt(item, int(api.get("sourceChars", 3000)))
     if not source_title or not source_body:
         return "", ""
-
-    key = os.environ.get(api.get("apiKeyEnv", "OPENAI_API_KEY"), "").strip()
-    day = ledger.day(now)
-    if not key:
-        ledger.record_error("no-api-key", now)
-    elif ledger.api_available(now) and day["spendUsd"] < float(api.get("dailyBudgetUsd", 0)):
-        hot = (int(item.get("score", 0)) >= int(api.get("hotMinScore", 5))
-               and day["hotSpendUsd"] < float(api.get("hotDailyBudgetUsd", 0)))
-        model = str(api.get("hotModel") if hot else api.get("model"))
-        tier = "openai-hot" if hot else "openai"
-        prices = api.get("pricesPerMTok", {})
-        try:
-            reply = llm.openai_editorial(
-                prompt, model, api, key,
-                lambda usage: ledger.record_call(tier, llm.cost_usd(usage, model, prices), hot, now))
-        except llm.ApiError as err:
-            ledger.record_error(err.kind, now)
-            if err.fatal:
-                ledger.disable_api(err.kind, now)
-        else:
-            title, summary = _validated_rewrite(reply, source_title, source_body)
+    for tier in cfg.get("order", ["openai", "subscription"]):
+        if tier == "subscription":
+            # Any miss on the free tier - skipped, silent or a failed gate -
+            # hands the item to the next tier at once.
+            title, summary = _subscription_tier(item, prompt, source_title, source_body,
+                                                cfg.get("subscription", {}), ledger, now)
             if title and summary:
-                item["editorial_path"] = tier
-                item["editorial_model"] = model
                 return title, summary
-            ledger.record_error("gate-rejected", now)
-            return "", ""
+        elif tier == "openai":
+            title, summary, stop = _openai_tier(item, prompt, source_title, source_body, api, ledger, now)
+            if title and summary:
+                return title, summary
+            if stop:
+                return "", ""
+    return "", ""
 
-    sub = cfg.get("subscription", {})
+
+def _subscription_tier(item: dict, prompt: str, source_title: str, source_body: str,
+                       sub: dict, ledger: "llm.Ledger", now: float) -> tuple[str, str]:
     if llm.subscription_block_reason(sub, ledger, load_json(ROOT / QUOTA_PATH, {}) or {}, now):
         return "", ""
     try:
@@ -1019,22 +1137,62 @@ def _ladder_llm(item: dict, cfg: dict, ledger: "llm.Ledger", now: float) -> tupl
     except RuntimeError:
         return "", ""
     ledger.record_subscription_call(now)
-    stdout = llm.subscription_editorial(prompt, sub, cli)
-    title, summary = _validated_rewrite(
-        _extract_json_object(_extract_agent_text(stdout)), source_title, source_body)
+    payload = _extract_json_object(_extract_agent_text(llm.subscription_editorial(prompt, sub, cli)))
+    if not payload:
+        # Silence means cooldown, a sick gateway or a timeout - states that
+        # last - so stop asking for a while instead of making every item wait.
+        ledger.pause_subscription("no-reply", now, float(sub.get("pauseMinutesAfterFailure", 15)) * 60)
+        ledger.record_error("subscription-failed", now)
+        return "", ""
+    title, summary = _validated_rewrite(payload, source_title, source_body)
+    if not (title and summary):
+        ledger.record_error("subscription-gate-rejected", now)
+        return "", ""
+    ledger.record_call("subscription", 0.0, False, now)
+    item["editorial_path"] = "subscription"
+    item["editorial_model"] = str(sub.get("model", "openai/gpt-5.5"))
+    return title, summary
+
+
+def _openai_tier(item: dict, prompt: str, source_title: str, source_body: str,
+                 api: dict, ledger: "llm.Ledger", now: float) -> tuple[str, str, bool]:
+    """Returns (title, summary, stop). stop=True means a paid draft failed the
+    fact gate: translation next, never a second paid or free opinion."""
+    key = os.environ.get(api.get("apiKeyEnv", "OPENAI_API_KEY"), "").strip()
+    if not key:
+        ledger.record_error("no-api-key", now)
+        return "", "", False
+    day = ledger.day(now)
+    if not ledger.api_available(now) or day["spendUsd"] >= float(api.get("dailyBudgetUsd", 0)):
+        return "", "", False
+    hot = (int(item.get("score", 0)) >= int(api.get("hotMinScore", 5))
+           and day["hotSpendUsd"] < float(api.get("hotDailyBudgetUsd", 0)))
+    model = str(api.get("hotModel") if hot else api.get("model"))
+    tier = "openai-hot" if hot else "openai"
+    prices = api.get("pricesPerMTok", {})
+    try:
+        reply = llm.openai_editorial(
+            prompt, model, api, key,
+            lambda usage: ledger.record_call(tier, llm.cost_usd(usage, model, prices), hot, now))
+    except llm.ApiError as err:
+        ledger.record_error(err.kind, now)
+        if err.fatal:
+            ledger.disable_api(err.kind, now)
+        return "", "", False
+    title, summary = _validated_rewrite(reply, source_title, source_body)
     if title and summary:
-        ledger.record_call("subscription", 0.0, False, now)
-        item["editorial_path"] = "subscription"
-        return title, summary
-    ledger.record_error("subscription-failed", now)
-    return "", ""
+        item["editorial_path"] = tier
+        item["editorial_model"] = model
+        return title, summary, False
+    ledger.record_error("gate-rejected", now)
+    return "", "", True
 ```
 
 In `editorial_for`, extend the docstring's mode list with:
 
 ```
-      "ladder"              - OpenAI API, then subscription, then translate;
-                              capped by editorial.openai.dailyBudgetUsd
+      "ladder"              - LLM tiers in editorial.order (subscription and
+                              the paid OpenAI API), then translation
 ```
 
 and insert as the first statements after `mode = cfg.get("mode", "translate")`:
@@ -1044,20 +1202,23 @@ and insert as the first statements after `mode = cfg.get("mode", "translate")`:
         return ladder_rewrite(item, config or {})
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 5: Run tests to verify they pass**
 
-Run: `python scripts/test_editorial_ladder.py`, then `python scripts/test_editorial_modes.py`, then `python scripts/test_editorial_retry.py`
-Expected: `All ladder tests passed.`, `All editorial routing tests passed.`, `All editorial-retry tests passed.`
+Run: `python scripts/test_editorial_ladder.py`, `python scripts/test_llm_transport.py`, `python scripts/test_editorial_modes.py`, `python scripts/test_editorial_retry.py`
+Expected: `All ladder tests passed.`, `All LLM transport tests passed.`, `All editorial routing tests passed.`, `All editorial-retry tests passed.`
 
-- [ ] **Step 5: Full suite, commit**
+- [ ] **Step 6: Full suite, commit**
 
 ```bash
-git add scripts/fastnews247_mvp.py scripts/test_editorial_ladder.py
-git commit -m "Add editorial mode ladder: paid API, then subscription, then translation
+git add scripts/fastnews247_llm.py scripts/test_llm_transport.py scripts/fastnews247_mvp.py scripts/test_editorial_ladder.py
+git commit -m "Add editorial mode ladder: subscription first, paid API right behind
 
-5-star items use the strong model until their own daily budget is spent; a
-daily cap stops paid calls; every tier passes the same fact gates. The model
-now reads up to 3000 chars of the verified article instead of two sentences.
+Tiers run in editorial.order. A silent subscription is paused for 15 minutes
+so later items go straight to the API; a subscription draft that fails the
+fact gate is rewritten by the API; a paid draft that fails it falls to
+translation. 5-star items use the strong model until their own budget is
+spent, and a daily cap stops paid calls. The model now reads up to 3000
+chars of the verified article instead of two sentences.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -2160,6 +2321,10 @@ def main() -> int:
     sub = editorial["subscription"]
     posting = config["posting"]
     check("mode ladder", editorial["mode"] == "ladder", editorial["mode"])
+    check("subscription first, API right behind", editorial.get("order") == ["subscription", "openai"],
+          editorial.get("order"))
+    check("pause after a silent subscription", editorial["subscription"].get("pauseMinutesAfterFailure") == 15,
+          editorial["subscription"])
     check("models", (api["model"], api["hotModel"], api["hotMinScore"]) == ("gpt-5.4-mini", "gpt-5.5", 5), api)
     check("budgets", (api["dailyBudgetUsd"], api["hotDailyBudgetUsd"]) == (3.0, 1.5), api)
     check("both models priced", all(model in api["pricesPerMTok"] for model in (api["model"], api["hotModel"])),
@@ -2204,6 +2369,7 @@ Replace the whole `"editorial": {...}` object with:
 ```json
   "editorial": {
     "mode": "ladder",
+    "order": ["subscription", "openai"],
     "maxLlmCallsPerRun": 2,
     "openai": {
       "apiKeyEnv": "OPENAI_API_KEY",
@@ -2227,7 +2393,8 @@ Replace the whole `"editorial": {...}` object with:
       "maxCallsPerHour": 10,
       "minUsableProfiles": 2,
       "quotaCacheMaxAgeMinutes": 120,
-      "timeoutSeconds": 180
+      "pauseMinutesAfterFailure": 15,
+      "timeoutSeconds": 120
     }
   },
 ```
@@ -2304,6 +2471,8 @@ if float(ledger.get("apiDisabledUntil", 0) or 0) > time.time():
     print(f"problem|OpenAI API dang bi tat ({ledger.get('lastApiError', '?')}) - kiem tra key/so du")
 if day.get("errors", {}).get("no-api-key"):
     print("problem|Chua co OPENAI_API_KEY trong .env - bot dang dung dich may")
+if float(ledger.get("subscriptionPausedUntil", 0) or 0) > time.time():
+    print(f"note|subscription|tam dung ({ledger.get('lastSubscriptionError', '?')}) - dang dung API")
 PY
 )
 while IFS='|' read -r kind first second; do
@@ -2365,7 +2534,7 @@ OPENAI_API_KEY=
 In `README.md`, replace the heading `## Ba chế độ biên tập` with `## Bốn chế độ biên tập` and add this row to its table:
 
 ```markdown
-| `ladder` | OpenAI API viết trước (5 sao: `gpt-5.5`, còn lại: `gpt-5.4-mini`), subscription dự phòng có kiểm soát, dịch máy là sàn | Trả phí, có trần `dailyBudgetUsd` |
+| `ladder` | Subscription viết trước (miễn phí, có kiểm soát); lỗi thì OpenAI API viết ngay (5 sao: `gpt-5.5`, còn lại: `gpt-5.4-mini`); dịch máy là sàn | Phần lớn miễn phí; API có trần `dailyBudgetUsd` |
 ```
 
 Then, directly after that table, add:
@@ -2373,14 +2542,18 @@ Then, directly after that table, add:
 ```markdown
 ### `ladder` — chế độ đang chạy trên VPS
 
+- Thứ tự theo `editorial.order` (`["subscription", "openai"]`): subscription
+  được thử trước. Bị chặn, không trả lời hoặc viết sai số liệu thì API viết
+  ngay; API viết sai số liệu thì dùng dịch máy.
+- Subscription chỉ được gọi khi còn ≥ 2 tài khoản OAuth không bị cooldown
+  (healthcheck ghi vào `subscription_quota.json` mỗi giờ) và chưa quá 10 lần
+  trong giờ. Không trả lời thì tạm dừng 15 phút (`pauseMinutesAfterFailure`)
+  để các tin sau đi thẳng sang API.
 - Chi phí thật ghi ở `storage/fastnews247/llm_ledger.json`, theo ngày giờ Việt
   Nam. Vượt `dailyBudgetUsd` thì ngừng gọi API; tin HOT có ngân sách riêng
   `hotDailyBudgetUsd`.
 - Key hỏng hoặc hết tiền (401/403/`insufficient_quota`): API tự tắt 30 phút và
   `healthcheck.sh` báo về Telegram.
-- Subscription chỉ được gọi khi API không dùng được, còn ≥ 2 tài khoản OAuth
-  không bị cooldown (healthcheck ghi vào `subscription_quota.json` mỗi giờ), và
-  chưa quá 10 lần trong giờ.
 - Tin trượt cổng được ghi nhớ 60 phút (`rejectRetryMinutes`) để không phải trả
   tiền viết lại mỗi 2 phút.
 ```

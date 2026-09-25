@@ -36,7 +36,12 @@ Ngày: 2026-09-25 · Trạng thái: chờ duyệt
 2. Tin lên nhanh: quét mỗi 2 phút, đăng mọi tin đạt chuẩn, không trần theo giờ.
 3. LLM viết mọi bài; tin 5 sao dùng model mạnh hơn.
 4. Chi phí dự đoán được, có trần cứng theo ngày.
-5. Subscription dành cho agent OpenClaw; bot chỉ dùng nó làm dự phòng có kiểm soát.
+5. Tiết kiệm: subscription viết trước (miễn phí), có kiểm soát để luôn chừa quota
+   cho agent OpenClaw; subscription lỗi thì API trả phí viết ngay.
+
+> **Sửa đổi 2026-09-25 theo yêu cầu người dùng:** đổi thứ tự bậc từ "API trước,
+> subscription dự phòng" sang "subscription trước, API ngay sau"
+> (`editorial.order: ["subscription", "openai"]`).
 
 **Không thuộc đợt này:** gỡ `NOPASSWD` sudo, cập nhật OpenClaw 2026.9.6, sửa cron
 heartbeat/memory-dreaming/skill-review, reboot kernel.
@@ -49,9 +54,9 @@ fastnews247.timer (2 phút)
        1. Tải 49 RSS + Coin369      ← GET có điều kiện (ETag / Last-Modified)
        2. Chấm điểm, độ mới, chống trùng          (giữ nguyên)
        3. Lấy nội dung bài gốc                     (giữ nguyên; Coin369 dùng chính bài Telegram)
-       4. Thang biên tập (mode "ladder"):
-            a. OpenAI API   — 5 sao: gpt-5.5 · còn lại: gpt-5.4-mini
-            b. Subscription — `openclaw agent exec`, chỉ khi (a) không dùng được
+       4. Thang biên tập (mode "ladder", thứ tự theo editorial.order):
+            a. Subscription — `openclaw agent exec`, miễn phí, có kiểm soát
+            b. OpenAI API   — ngay khi (a) bị chặn/lỗi/sai; 5 sao: gpt-5.5 · còn lại: gpt-5.4-mini
             c. Dịch máy     — hiện có
           mọi bậc đi qua CÙNG bộ cổng sự thật và chất lượng hiện có
        5. Đăng thẳng Telegram Bot API (mode "direct", có xử lý retry_after)
@@ -93,8 +98,10 @@ Cấu hình mới trong `config/fastnews247.sources.json`:
     "maxCallsPerHour": 10,
     "minUsableProfiles": 2,
     "quotaCacheMaxAgeMinutes": 120,
-    "timeoutSeconds": 180
-  }
+    "pauseMinutesAfterFailure": 15,
+    "timeoutSeconds": 120
+  },
+  "order": ["subscription", "openai"]
 }
 ```
 
@@ -111,14 +118,18 @@ Các chế độ cũ `translate`, `auto`, `openclaw` vẫn giữ để chạy đ
 - Chi phí tính từ số `input_tokens` / `output_tokens` API trả về, nhân với bảng
   giá trong config.
 
-**Thứ tự chọn bậc cho mỗi tin:**
+**Thứ tự chọn bậc cho mỗi tin** (`editorial.order`, cấu hình đi kèm là
+`["subscription", "openai"]`; nếu không khai báo thì mặc định API trước):
 
-| Điều kiện | Bậc được dùng |
-|---|---|
-| điểm ≥ `hotMinScore`, đã chi cho tin HOT < `hotDailyBudgetUsd`, tổng < `dailyBudgetUsd` | `hotModel` |
-| tổng đã chi < `dailyBudgetUsd` | `model` |
-| API bị tắt, hoặc vượt trần | subscription (nếu qua được điều kiện chặn) |
-| subscription không dùng được | dịch máy |
+| Bước | Điều kiện | Kết quả |
+|---|---|---|
+| 1. Subscription | qua điều kiện chặn (mục B) và trả về bài đạt cổng sự thật | dùng bài này, không tốn tiền |
+| | bị chặn, không trả lời, hoặc bài sai số liệu | sang bước 2 ngay |
+| 2. API | điểm ≥ `hotMinScore`, đã chi cho tin HOT < `hotDailyBudgetUsd`, tổng < `dailyBudgetUsd` | `hotModel` |
+| | tổng đã chi < `dailyBudgetUsd` | `model` |
+| | API bị tắt hoặc vượt trần | sang bước 3 |
+| | bài API sai số liệu | sang bước 3 (không mua thêm ý kiến thứ hai) |
+| 3. Dịch máy | | như hiện tại |
 
 - Ngày tính theo giờ Việt Nam. Trần có thể bị vượt tối đa bằng chi phí của đúng
   một lần gọi (khoảng 0,03 USD).
@@ -141,7 +152,13 @@ Các chế độ cũ `translate`, `auto`, `openclaw` vẫn giữ để chạy đ
 
 - Chỉ giữ 14 ngày gần nhất.
 
-### B. Bậc dự phòng bằng subscription
+### B. Bậc subscription (chạy trước)
+
+- **Tạm dừng khi im lặng:** nếu subscription không trả về gì dùng được (cooldown,
+  gateway lỗi, quá thời gian), tạm dừng bậc này 15 phút
+  (`pauseMinutesAfterFailure`) để các tin sau đi thẳng sang API, không phải chờ.
+  Bài sai số liệu không làm tạm dừng, chỉ chuyển tin đó sang API.
+- Thời gian chờ tối đa cho một lần gọi subscription: 120 giây.
 
 - Gọi `openclaw agent exec --message-file <tmp> --model openai/gpt-5.5 --thinking low
   --json --timeout 180 --cwd <thư mục tạm>`. Lệnh này chạy một lượt agent độc lập.
@@ -274,10 +291,13 @@ Description cho đúng.
 
 | Tình huống | Hành vi |
 |---|---|
-| OpenAI 429 / 5xx / timeout | thử lại 1 lần (tôn trọng `Retry-After` ≤ 10 giây) → subscription → dịch máy |
-| OpenAI 401 / 403 / `insufficient_quota` | tắt API 30 phút, ghi sổ, healthcheck cảnh báo → subscription → dịch máy |
-| Vượt trần ngày | subscription (nếu qua điều kiện chặn) → dịch máy |
-| Gateway chết | đăng bài không bị ảnh hưởng; bỏ qua bậc subscription |
+| Subscription bị chặn (tài khoản cooldown, quá 10 lần/giờ, đang tạm dừng) | API ngay |
+| Subscription không trả lời / quá 120 giây | tạm dừng subscription 15 phút → API ngay |
+| Subscription viết sai số liệu | API viết lại tin đó |
+| OpenAI 429 / 5xx / timeout | thử lại 1 lần (tôn trọng `Retry-After` ≤ 10 giây) → dịch máy |
+| OpenAI 401 / 403 / `insufficient_quota` | tắt API 30 phút, ghi sổ, healthcheck cảnh báo → dịch máy |
+| Vượt trần ngày | dịch máy |
+| Gateway chết | đăng bài không bị ảnh hưởng; subscription tự tạm dừng, API gánh |
 | Telegram 429 | chờ `retry_after` ≤ 30 giây rồi thử lại 1 lần; nếu không thì ghi `pending` |
 | Coin369 đổi HTML | 0 tin + cảnh báo nguồn; các nguồn khác chạy bình thường |
 | RSS trả 304 | dùng lại danh sách tin đã lưu |
@@ -300,6 +320,16 @@ Description cho đúng.
 
 **Lưu ý:** ước tính 1,35 USD/ngày đưa ra trong chat giả định 15% tin là 5 sao. Số
 đo thực tế là 38%.
+
+**Khi subscription chạy trước:**
+- Kênh cần trung bình khoảng 8 lần gọi/giờ, trần subscription là 10 lần/giờ.
+  Khi còn ≥ 2 tài khoản khoẻ, subscription gánh phần lớn, chi phí API gần 0;
+  giờ cao điểm thì phần vượt trần sang API.
+- Khi tài khoản cooldown (như hiện tại: 22 giờ – 5 ngày), mọi tin đi API, khoảng
+  2 USD/ngày như trên.
+- Chưa biết mỗi lần `openclaw agent exec` tốn bao nhiêu quota subscription, vì
+  lệnh này mang theo system prompt của agent. Sẽ đo khi có tài khoản hồi lại,
+  rồi chỉnh `maxCallsPerHour`.
 
 ## 7. Kiểm thử
 
