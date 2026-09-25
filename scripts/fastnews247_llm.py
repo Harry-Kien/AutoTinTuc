@@ -73,6 +73,8 @@ class Ledger:
             "subscriptionCalls": raw.get("subscriptionCalls", {}),
             "apiDisabledUntil": float(raw.get("apiDisabledUntil", 0) or 0),
             "lastApiError": raw.get("lastApiError", ""),
+            "subscriptionPausedUntil": float(raw.get("subscriptionPausedUntil", 0) or 0),
+            "lastSubscriptionError": raw.get("lastSubscriptionError", ""),
         }
 
     def day(self, now: float) -> dict:
@@ -103,6 +105,13 @@ class Ledger:
 
     def record_subscription_call(self, now: float) -> None:
         self.data["subscriptionCalls"][vietnam_hour(now)] = self.subscription_calls(now) + 1
+
+    def subscription_paused(self, now: float) -> bool:
+        return now < self.data["subscriptionPausedUntil"]
+
+    def pause_subscription(self, reason: str, now: float, seconds: float) -> None:
+        self.data["subscriptionPausedUntil"] = now + seconds
+        self.data["lastSubscriptionError"] = reason
 
     def save(self) -> None:
         for bucket, keep in (("days", KEEP_DAYS), ("subscriptionCalls", KEEP_HOURS)):
@@ -204,6 +213,8 @@ def subscription_block_reason(cfg: dict, ledger: Ledger, quota: dict, now: float
     """'' when the subscription tier may be used, otherwise why it may not."""
     if not cfg.get("enabled"):
         return "disabled"
+    if ledger.subscription_paused(now):
+        return "paused"
     if now - float(quota.get("at", 0) or 0) > float(cfg.get("quotaCacheMaxAgeMinutes", 120)) * 60:
         return "quota-unknown"
     if int(quota.get("usableProfiles", 0) or 0) < int(cfg.get("minUsableProfiles", 2)):

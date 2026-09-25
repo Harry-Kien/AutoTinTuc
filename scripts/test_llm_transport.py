@@ -226,6 +226,20 @@ def main() -> int:
             empty.record_subscription_call(NOW)
             check("hourly cap", llm.subscription_block_reason(sub, empty, fresh, NOW) == "hourly-cap")
 
+            print("subscription pause")
+            paused = llm.Ledger(Path(directory) / "paused.json", load, save)
+            check("not paused by default", not paused.subscription_paused(NOW))
+            paused.pause_subscription("no-reply", NOW, 900)
+            check("paused inside the window", paused.subscription_paused(NOW + 899))
+            check("resumes after the window", not paused.subscription_paused(NOW + 900))
+            check("pause reason kept", paused.data["lastSubscriptionError"] == "no-reply")
+            check("block reason paused", llm.subscription_block_reason(sub, paused, fresh, NOW + 60) == "paused")
+            check("disabled still wins over paused",
+                  llm.subscription_block_reason(dict(sub, enabled=False), paused, fresh, NOW) == "disabled")
+            paused.save()
+            check("pause persisted",
+                  llm.Ledger(Path(directory) / "paused.json", load, save).subscription_paused(NOW + 60))
+
         print("subscription_editorial")
         seen = {}
 

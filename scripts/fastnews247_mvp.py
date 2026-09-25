@@ -29,6 +29,7 @@ import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from pathlib import Path
 
+import fastnews247_llm as llm
 
 for stream in (sys.stdout, sys.stderr):
     if hasattr(stream, "reconfigure"):
@@ -37,6 +38,8 @@ for stream in (sys.stdout, sys.stderr):
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config" / "fastnews247.sources.json"
+LEDGER_PATH = Path("storage/fastnews247/llm_ledger.json")
+QUOTA_PATH = Path("storage/fastnews247/subscription_quota.json")
 VIETNAM_TZ = dt.timezone(dt.timedelta(hours=7), "Asia/Saigon")
 URL_PATTERN = re.compile(r"(?i)\b(?:https?://|www\.)\S+|\b(?:[a-z0-9-]+\.)+[a-z]{2,63}\b(?:/\S*)?")
 GENERIC_HEADLINE_PHRASES = (
@@ -962,6 +965,41 @@ def _extract_json_object(text: str) -> dict:
     return {}
 
 
+def _editorial_prompt(item: dict, body_chars: int = 0) -> tuple[str, str, str]:
+    """Return (prompt, source_title, source_body) for any LLM tier.
+
+    body_chars > 0 hands the model up to that much verified article text
+    instead of the two ranked sentences. The numbers it may use are then
+    checked against exactly the text it was given.
+    """
+    source_title = strip_urls(item.get("title", ""))
+    article = strip_urls(item.get("article_text", ""))
+    if body_chars > 0 and article:
+        source_body = article[:body_chars]
+    else:
+        sentences = item.get("source_sentences") or source_summary_sentences(item)
+        source_body = " ".join(sentences)[:4000]
+    prompt = EDITORIAL_PROMPT.replace("{source_title}", source_title).replace(
+        "{source_body}", source_body)
+    return prompt, source_title, source_body
+
+
+def _validated_rewrite(payload: dict, source_title: str, source_body: str) -> tuple[str, str]:
+    """The fact gates every LLM tier must pass; ("", "") when it fails any."""
+    title = strip_urls(str(payload.get("title", ""))).strip().rstrip(" .")
+    summary = strip_urls(str(payload.get("summary", ""))).strip()
+    if not title or not summary:
+        return "", ""
+    if not looks_vietnamese(title) or not looks_vietnamese(summary):
+        return "", ""
+    allowed = _fact_numbers(source_title) | _fact_numbers(source_body)
+    if not _fact_numbers(title).issubset(allowed):
+        return "", ""
+    if not _fact_numbers(summary).issubset(allowed):
+        return "", ""
+    return title, summary
+
+
 def openclaw_rewrite(item: dict, cfg: dict) -> tuple[str, str]:
     """Ask the OpenClaw agent for a Vietnamese rewrite.
 
@@ -970,14 +1008,9 @@ def openclaw_rewrite(item: dict, cfg: dict) -> tuple[str, str]:
     The result is then held to the SAME fact checks as that path - the LLM is
     allowed to write better prose, never to introduce facts.
     """
-    source_title = strip_urls(item.get("title", ""))
-    sentences = item.get("source_sentences") or source_summary_sentences(item)
-    source_body = " ".join(sentences)[:4000]
+    prompt, source_title, source_body = _editorial_prompt(item)
     if not source_title or not source_body:
         return "", ""
-
-    prompt = EDITORIAL_PROMPT.replace("{source_title}", source_title).replace(
-        "{source_body}", source_body)
 
     try:
         cli = resolve_openclaw_cli()
@@ -1009,20 +1042,108 @@ def openclaw_rewrite(item: dict, cfg: dict) -> tuple[str, str]:
             pass
 
     payload = _extract_json_object(_extract_agent_text(result.stdout))
-    title = strip_urls(str(payload.get("title", ""))).strip().rstrip(" .")
-    summary = strip_urls(str(payload.get("summary", ""))).strip()
-    if not title or not summary:
-        return "", ""
+    return _validated_rewrite(payload, source_title, source_body)
 
-    # Same gates the translation path applies - the LLM gets no extra latitude.
-    if not looks_vietnamese(title) or not looks_vietnamese(summary):
+
+def ladder_rewrite(item: dict, config: dict, now: float | None = None) -> tuple[str, str]:
+    """editorial.mode "ladder": the LLM tiers in editorial.order, then translation.
+
+    Every LLM tier is held to _validated_rewrite here and to the headline and
+    summary gates in draft_post, so neither a free nor a paid model gets
+    looser checks than machine translation.
+    """
+    now = time.time() if now is None else now
+    ledger = llm.Ledger(ROOT / LEDGER_PATH, load_json, save_json)
+    try:
+        title, summary = _ladder_llm(item, config.get("editorial", {}), ledger, now)
+    finally:
+        ledger.save()
+    if title and summary:
+        return title, summary
+    item["editorial_path"] = "translate"
+    return vietnamese_editorial(item)
+
+
+def _ladder_llm(item: dict, cfg: dict, ledger: "llm.Ledger", now: float) -> tuple[str, str]:
+    api = cfg.get("openai", {})
+    prompt, source_title, source_body = _editorial_prompt(item, int(api.get("sourceChars", 3000)))
+    if not source_title or not source_body:
         return "", ""
-    allowed = _fact_numbers(source_title) | _fact_numbers(source_body)
-    if not _fact_numbers(title).issubset(allowed):
+    for tier in cfg.get("order", ["openai", "subscription"]):
+        if tier == "subscription":
+            # Any miss on the free tier - skipped, silent or a failed gate -
+            # hands the item to the next tier at once.
+            title, summary = _subscription_tier(item, prompt, source_title, source_body,
+                                                cfg.get("subscription", {}), ledger, now)
+            if title and summary:
+                return title, summary
+        elif tier == "openai":
+            title, summary, stop = _openai_tier(item, prompt, source_title, source_body, api, ledger, now)
+            if title and summary:
+                return title, summary
+            if stop:
+                return "", ""
+    return "", ""
+
+
+def _subscription_tier(item: dict, prompt: str, source_title: str, source_body: str,
+                       sub: dict, ledger: "llm.Ledger", now: float) -> tuple[str, str]:
+    if llm.subscription_block_reason(sub, ledger, load_json(ROOT / QUOTA_PATH, {}) or {}, now):
         return "", ""
-    if not _fact_numbers(summary).issubset(allowed):
+    try:
+        cli = resolve_openclaw_cli()
+    except RuntimeError:
         return "", ""
+    ledger.record_subscription_call(now)
+    payload = _extract_json_object(_extract_agent_text(llm.subscription_editorial(prompt, sub, cli)))
+    if not payload:
+        # Silence means cooldown, a sick gateway or a timeout - states that
+        # last - so stop asking for a while instead of making every item wait.
+        ledger.pause_subscription("no-reply", now, float(sub.get("pauseMinutesAfterFailure", 15)) * 60)
+        ledger.record_error("subscription-failed", now)
+        return "", ""
+    title, summary = _validated_rewrite(payload, source_title, source_body)
+    if not (title and summary):
+        ledger.record_error("subscription-gate-rejected", now)
+        return "", ""
+    ledger.record_call("subscription", 0.0, False, now)
+    item["editorial_path"] = "subscription"
+    item["editorial_model"] = str(sub.get("model", "openai/gpt-5.5"))
     return title, summary
+
+
+def _openai_tier(item: dict, prompt: str, source_title: str, source_body: str,
+                 api: dict, ledger: "llm.Ledger", now: float) -> tuple[str, str, bool]:
+    """Returns (title, summary, stop). stop=True means a paid draft failed the
+    fact gate: translation next, never a second paid or free opinion."""
+    key = os.environ.get(api.get("apiKeyEnv", "OPENAI_API_KEY"), "").strip()
+    if not key:
+        ledger.record_error("no-api-key", now)
+        return "", "", False
+    day = ledger.day(now)
+    if not ledger.api_available(now) or day["spendUsd"] >= float(api.get("dailyBudgetUsd", 0)):
+        return "", "", False
+    hot = (int(item.get("score", 0)) >= int(api.get("hotMinScore", 5))
+           and day["hotSpendUsd"] < float(api.get("hotDailyBudgetUsd", 0)))
+    model = str(api.get("hotModel") if hot else api.get("model"))
+    tier = "openai-hot" if hot else "openai"
+    prices = api.get("pricesPerMTok", {})
+    try:
+        reply = llm.openai_editorial(
+            prompt, model, api, key,
+            lambda usage: ledger.record_call(tier, llm.cost_usd(usage, model, prices), hot, now))
+    except llm.ApiError as err:
+        ledger.record_error(err.kind, now)
+        if err.fatal:
+            ledger.disable_api(err.kind, now)
+        return "", "", False
+    title, summary = _validated_rewrite(reply, source_title, source_body)
+    if title and summary:
+        item["editorial_path"] = tier
+        item["editorial_model"] = model
+        return title, summary, False
+    ledger.record_error("gate-rejected", now)
+    return "", "", True
 
 
 def editorial_for(item: dict, config: dict | None = None,
@@ -1033,6 +1154,8 @@ def editorial_for(item: dict, config: dict | None = None,
       "translate" (default) - today's behaviour, no LLM, no quota cost
       "auto"                - translate first; LLM only to rescue a dropped item
       "openclaw"            - LLM first, translate as the fallback
+      "ladder"              - LLM tiers in editorial.order (subscription and
+                              the paid OpenAI API), then translation
 
     "auto" exists because the LLM runs on a ChatGPT subscription quota. Calling
     it for every candidate would be maxArticleChecksPerRun calls per run; here
@@ -1040,6 +1163,9 @@ def editorial_for(item: dict, config: dict | None = None,
     """
     cfg = (config or {}).get("editorial", {})
     mode = cfg.get("mode", "translate")
+
+    if mode == "ladder":
+        return ladder_rewrite(item, config or {})
 
     def spend() -> bool:
         if budget is None:
