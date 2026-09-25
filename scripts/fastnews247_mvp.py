@@ -171,6 +171,12 @@ def child_text(node: ET.Element, names: list[str]) -> str:
 
 def parse_feed(feed: dict) -> list[dict]:
     raw = fetch_url(feed["url"], timeout=int(feed.get("timeoutSeconds", 10)))
+    if feed.get("type") == "telegram_public":
+        return parse_telegram_channel(raw, feed)
+    return parse_rss_items(raw, feed)
+
+
+def parse_rss_items(raw: bytes, feed: dict) -> list[dict]:
     root = ET.fromstring(raw)
     items = [node for node in root.iter() if node.tag.split("}")[-1] == "item"]
     if not items:
@@ -217,6 +223,82 @@ def parse_time(value: str) -> float:
         except (ValueError, TypeError, OverflowError):
             pass
     return 0
+
+
+TELEGRAM_TIME_MARKER = re.compile(r"^\W*\d{1,2}:\d{2}\s*:\s*")
+
+
+class TelegramChannelParser(HTMLParser):
+    """Messages on a public channel preview page (https://t.me/s/<channel>)."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.messages: list[dict] = []
+        self._current: dict | None = None
+        self._depth = 0
+        self._parts: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        classes = (attributes.get("class") or "").split()
+        if tag == "div" and "tgme_widget_message" in classes and attributes.get("data-post"):
+            self._current = {"post": attributes["data-post"], "text": "", "published": ""}
+            self.messages.append(self._current)
+            return
+        if self._current is None:
+            return
+        if self._depth:
+            if tag == "div":
+                self._depth += 1
+            elif tag == "br":
+                self._parts.append("\n")
+        elif tag == "div" and "tgme_widget_message_text" in classes and not self._current["text"]:
+            self._depth = 1
+            self._parts = []
+        if tag == "time" and attributes.get("datetime") and not self._current["published"]:
+            self._current["published"] = attributes["datetime"]
+
+    def handle_endtag(self, tag):
+        if self._depth and tag == "div":
+            self._depth -= 1
+            if self._depth == 0 and self._current is not None:
+                self._current["text"] = "".join(self._parts)
+
+    def handle_data(self, data):
+        if self._depth:
+            self._parts.append(data)
+
+
+def parse_telegram_channel(raw: bytes, feed: dict) -> list[dict]:
+    """One item per text message. The message is its own article: a channel
+    post has no separate page, so run_once uses inline_article instead of
+    fetching one."""
+    parser = TelegramChannelParser()
+    parser.feed(raw.decode("utf-8", errors="replace"))
+    items = []
+    for message in parser.messages[-30:]:
+        text = re.sub(r"[ \t ]+", " ", message["text"]).strip()
+        text = TELEGRAM_TIME_MARKER.sub("", text).strip()
+        if not text:
+            continue
+        first = re.split(r"(?<=[.!?])\s|\n", text, maxsplit=1)[0].strip()
+        title = first if len(first) <= 200 else first[:200].rsplit(" ", 1)[0]
+        body = re.sub(r"\s+", " ", text).strip()
+        items.append({
+            "title": strip_html(title),
+            "summary": body,
+            "link": f"https://t.me/{message['post']}",
+            "published": message["published"],
+            "source": feed["name"],
+            "category": feed.get("category", "general"),
+            "priority": int(feed.get("priority", 3)),
+            "region": feed.get("region", "global"),
+            "sourceTier": feed.get("sourceTier", "secondary"),
+            "articleHtmlAllowed": False,
+            "inline_article": body,
+            "minimumTextChars": int(feed.get("minimumTextChars", 120)),
+        })
+    return items
 
 
 class ArticleHTMLParser(HTMLParser):
@@ -1607,7 +1689,16 @@ def run_once(config: dict, post: bool = False) -> int:
         if any(same_event(item, previous) for previous in list(state["seen"].values()) + selected):
             rejected.append(f"{item['source']}: duplicate-event :: {item['title']}")
             continue
-        if config["posting"].get("requireSourceArticle", True):
+        if item.get("inline_article") is not None:
+            # The source's own post is the article (a Telegram channel has no
+            # separate page), so there is nothing to fetch.
+            inline = re.sub(r"\s+", " ", strip_urls(item["inline_article"])).strip()
+            if len(inline) < int(item.get("minimumTextChars", 120)):
+                rejected.append(f"{item['source']}: article-text-too-thin :: {item['title'][:120]}")
+                continue
+            item["article_text"] = inline
+            item["source_article_verified"] = True
+        elif config["posting"].get("requireSourceArticle", True):
             if article_checks >= max_article_checks:
                 rejected.append(f"{item['source']}: article-check-budget-exhausted :: {item['title'][:120]}")
                 continue
