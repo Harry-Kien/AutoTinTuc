@@ -226,6 +226,30 @@ def parse_time(value: str) -> float:
 
 
 TELEGRAM_TIME_MARKER = re.compile(r"^\W*\d{1,2}:\d{2}\s*:\s*")
+# A short banner line like "⏰ Tin Nhanh Crypto: (03:35)": a time (optionally
+# in parentheses) with at most 4 other words once emoji/punctuation are gone.
+TELEGRAM_HEADER_TIME = re.compile(r"\(?\d{1,2}:\d{2}\)?")
+TELEGRAM_LEADING_JUNK = re.compile(r"^[^\w]+")
+
+
+def _is_telegram_header_line(line: str) -> bool:
+    if not TELEGRAM_HEADER_TIME.search(line):
+        return False
+    remainder = TELEGRAM_HEADER_TIME.sub(" ", line)
+    return len(re.findall(r"\w+", remainder)) <= 4
+
+
+def _telegram_message_lines(text: str) -> list[str]:
+    """Split a message into content lines: collapse whitespace within each
+    line, drop empty lines, then drop a leading header banner (time, no real
+    content) and a trailing "Xem thêm ..." link line."""
+    lines = [re.sub(r"[ \t\xa0]+", " ", line).strip() for line in text.split("\n")]
+    lines = [line for line in lines if line]
+    while lines and _is_telegram_header_line(lines[0]):
+        lines.pop(0)
+    while lines and TELEGRAM_LEADING_JUNK.sub("", lines[-1]).startswith("Xem thêm"):
+        lines.pop()
+    return lines
 
 
 class TelegramChannelParser(HTMLParser):
@@ -277,13 +301,18 @@ def parse_telegram_channel(raw: bytes, feed: dict) -> list[dict]:
     parser.feed(raw.decode("utf-8", errors="replace"))
     items = []
     for message in parser.messages[-30:]:
-        text = re.sub(r"[ \t ]+", " ", message["text"]).strip()
-        text = TELEGRAM_TIME_MARKER.sub("", text).strip()
-        if not text:
+        lines = _telegram_message_lines(message["text"])
+        if not lines:
             continue
-        first = re.split(r"(?<=[.!?])\s|\n", text, maxsplit=1)[0].strip()
+        lines[0] = TELEGRAM_TIME_MARKER.sub("", lines[0]).strip()
+        if not lines[0]:
+            lines.pop(0)
+        if not lines:
+            continue
+        body = " ".join(lines)
+        first = re.split(r"(?<=[.!?])\s|\n", body, maxsplit=1)[0].strip()
+        first = TELEGRAM_LEADING_JUNK.sub("", first)
         title = first if len(first) <= 200 else first[:200].rsplit(" ", 1)[0]
-        body = re.sub(r"\s+", " ", text).strip()
         items.append({
             "title": strip_html(title),
             "summary": body,

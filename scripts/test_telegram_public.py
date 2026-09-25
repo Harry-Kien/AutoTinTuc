@@ -41,6 +41,16 @@ def message(post: str, stamp: str, inner: str) -> str:
 
 EMOJI = ('<i class="emoji" style="background-image:url(\'//telegram.org/img/emoji/40/F09F94B9.png\')">'
          '<b>🔹</b></i>')
+# A "digest" shape (~10% of Coin369 posts): a short header banner line (time,
+# no real content), then the actual news, then a "Xem thêm" link line.
+DIGEST_INNER = (
+    "⏰ Tin Nhanh Crypto: (03:35) <br>"
+    "🔥 Cựu lãnh đạo CFTC sẽ rời khỏi Hiệp hội Blockchain sau khi cuộc bỏ phiếu về CLARITY thất bại."
+    '<br><br><a href="https://example.com/xem-them">Xem thêm 👉👉👉</a>'
+)
+# A one-line flash whose body happens to contain a time - must not be mistaken
+# for a header banner (a header has at most 4 other words).
+FLASH_INNER = f"{EMOJI} 11:02: Giá vàng lúc 10:30 tăng lên mức cao nhất trong tuần."
 PAGE = ("<html><body><section>"
         + message("coin369channel/354808", "2026-09-25T03:35:11+00:00",
                   f"{EMOJI}  10:35:  Lợi suất trái phiếu chính phủ chuẩn kỳ hạn 10 năm của Ấn Độ là 7,1347%; "
@@ -49,6 +59,8 @@ PAGE = ("<html><body><section>"
         + message("coin369channel/354810", "2026-09-25T03:47:12+00:00",
                   f"{EMOJI} 10:47: Thủ tướng &quot;Netanyahu&quot; phát biểu tại Liên hợp quốc.<br/>"
                   "Đa số đại diện các quốc gia đã rời khỏi hội trường để phản đối.")
+        + message("coin369channel/354811", "2026-09-25T03:50:00+00:00", DIGEST_INNER)
+        + message("coin369channel/354812", "2026-09-25T03:52:00+00:00", FLASH_INNER)
         + "</section></body></html>").encode("utf-8")
 
 
@@ -63,8 +75,8 @@ def check(name: str, condition: bool, detail: object = "") -> None:
 def main() -> int:
     print("parser")
     items = bot.parse_telegram_channel(PAGE, FEED)
-    check("two text messages, photo-only skipped", len(items) == 2, len(items))
-    first, second = items
+    check("four text messages, photo-only skipped", len(items) == 4, len(items))
+    first, second, digest, flash = items
     check("marker stripped from title", first["title"].startswith("Lợi suất trái phiếu"), first["title"])
     check("title is the first sentence", first["title"].endswith("20 tháng 5."), first["title"])
     check("link per message", first["link"] == "https://t.me/coin369channel/354808", first["link"])
@@ -78,9 +90,22 @@ def main() -> int:
     check("title has no emoji marker", "🔹" not in second["title"] and "10:47" not in second["title"],
           second["title"])
 
+    check("digest header banner dropped, title is the real sentence",
+          digest["title"] == "Cựu lãnh đạo CFTC sẽ rời khỏi Hiệp hội Blockchain sau khi cuộc bỏ phiếu về "
+          "CLARITY thất bại.", digest["title"])
+    check("digest title has no header or Xem them text", not any(
+        marker in digest["title"] for marker in ("Tin Nhanh Crypto", "03:35", "Xem thêm")), digest["title"])
+    check("digest inline article has no header or Xem them text", not any(
+        marker in digest["inline_article"] for marker in ("Tin Nhanh Crypto", "03:35", "Xem thêm")),
+        digest["inline_article"])
+
+    check("flash with a time inside real content is kept", bool(flash["title"]), flash)
+    check("flash title keeps the in-content time (not mistaken for a header)",
+          "10:30" in flash["title"], flash["title"])
+
     print("parse_feed dispatches on type")
     with patch.object(bot, "fetch_url", return_value=PAGE):
-        check("telegram_public routed to channel parser", len(bot.parse_feed(FEED)) == 2)
+        check("telegram_public routed to channel parser", len(bot.parse_feed(FEED)) == 4)
 
     print("run_once uses the inline article and never fetches a page")
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
