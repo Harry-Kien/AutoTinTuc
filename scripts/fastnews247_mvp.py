@@ -79,6 +79,20 @@ def load_json(path: Path, default):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _load_json_quietly(path: Path, default):
+    """Like load_json, but a missing, empty, truncated, BOM-mangled, or
+    non-dict file never aborts the run - the caller gets `default` instead of
+    a raised exception. Used for state files (the quota cache, the ledger)
+    where a missing or unreadable file simply means that tier is unusable for
+    this run, not that the whole run should fail.
+    """
+    try:
+        raw = load_json(path, default)
+    except (OSError, ValueError):
+        return default
+    return raw if isinstance(raw, dict) else default
+
+
 def save_json(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
@@ -1000,6 +1014,23 @@ def _validated_rewrite(payload: dict, source_title: str, source_body: str) -> tu
     return title, summary
 
 
+def _llm_draft_issues(title: str, summary: str, item: dict) -> tuple[str, str, list[str]]:
+    """The headline/summary gates every LLM tier must also clear.
+
+    A fact-clean draft (one that passed _validated_rewrite) can still read
+    too thin, generic, or incomplete for headline_quality_issues /
+    summary_quality_issues - the same gates draft_post applies. Checking them
+    here too means a tier that fails them is treated like any other miss and
+    the ladder moves on, instead of the draft reaching draft_post and being
+    silently dropped there. Returns the shortened (title, summary) actually
+    checked, plus any issues found.
+    """
+    title = shorten_title(title, limit=220)
+    summary = shorten_title(summary, limit=520)
+    issues = headline_quality_issues(title, item) + summary_quality_issues(summary, item, title)
+    return title, summary, issues
+
+
 def openclaw_rewrite(item: dict, cfg: dict) -> tuple[str, str]:
     """Ask the OpenClaw agent for a Vietnamese rewrite.
 
@@ -1048,16 +1079,33 @@ def openclaw_rewrite(item: dict, cfg: dict) -> tuple[str, str]:
 def ladder_rewrite(item: dict, config: dict, now: float | None = None) -> tuple[str, str]:
     """editorial.mode "ladder": the LLM tiers in editorial.order, then translation.
 
-    Every LLM tier is held to _validated_rewrite here and to the headline and
-    summary gates in draft_post, so neither a free nor a paid model gets
-    looser checks than machine translation.
+    Every LLM tier is held to _validated_rewrite, plus the same headline and
+    summary gates draft_post applies - those gates now also run here, at tier
+    acceptance, so a fact-clean but too-thin draft moves to the next tier
+    instead of being silently dropped later in draft_post.
+
+    The channel must never stop posting because the LLM or its state files are
+    unavailable: an unreadable ledger file is treated as a fresh ledger (and
+    noted in it), and any unexpected exception from a tier falls through to
+    machine translation exactly like an ordinary miss.
     """
     now = time.time() if now is None else now
-    ledger = llm.Ledger(ROOT / LEDGER_PATH, load_json, save_json)
+    ledger_path = ROOT / LEDGER_PATH
+    ledger_unreadable = ledger_path.exists() and _load_json_quietly(ledger_path, None) is None
+    ledger = llm.Ledger(ledger_path, _load_json_quietly, save_json)
+    if ledger_unreadable:
+        ledger.record_error("ledger-unreadable", now)
+    title, summary = "", ""
     try:
-        title, summary = _ladder_llm(item, config.get("editorial", {}), ledger, now)
+        try:
+            title, summary = _ladder_llm(item, config.get("editorial", {}), ledger, now)
+        except Exception as exc:
+            ledger.record_error(f"ladder-exception-{type(exc).__name__}", now)
     finally:
-        ledger.save()
+        try:
+            ledger.save()
+        except OSError:
+            pass
     if title and summary:
         return title, summary
     item["editorial_path"] = "translate"
@@ -1088,7 +1136,8 @@ def _ladder_llm(item: dict, cfg: dict, ledger: "llm.Ledger", now: float) -> tupl
 
 def _subscription_tier(item: dict, prompt: str, source_title: str, source_body: str,
                        sub: dict, ledger: "llm.Ledger", now: float) -> tuple[str, str]:
-    if llm.subscription_block_reason(sub, ledger, load_json(ROOT / QUOTA_PATH, {}) or {}, now):
+    quota = _load_json_quietly(ROOT / QUOTA_PATH, {}) or {}
+    if llm.subscription_block_reason(sub, ledger, quota, now):
         return "", ""
     try:
         cli = resolve_openclaw_cli()
@@ -1104,6 +1153,13 @@ def _subscription_tier(item: dict, prompt: str, source_title: str, source_body: 
         return "", ""
     title, summary = _validated_rewrite(payload, source_title, source_body)
     if not (title and summary):
+        ledger.record_error("subscription-gate-rejected", now)
+        return "", ""
+    title, summary, issues = _llm_draft_issues(title, summary, item)
+    if issues:
+        # A fact-clean draft that still fails the headline/summary gates is
+        # exactly like a failed fact gate: no pause, just move to the next
+        # tier - the free tier's miss may still be rescued by a paid draft.
         ledger.record_error("subscription-gate-rejected", now)
         return "", ""
     ledger.record_call("subscription", 0.0, False, now)
@@ -1139,9 +1195,14 @@ def _openai_tier(item: dict, prompt: str, source_title: str, source_body: str,
         return "", "", False
     title, summary = _validated_rewrite(reply, source_title, source_body)
     if title and summary:
-        item["editorial_path"] = tier
-        item["editorial_model"] = model
-        return title, summary, False
+        title, summary, issues = _llm_draft_issues(title, summary, item)
+        if not issues:
+            item["editorial_path"] = tier
+            item["editorial_model"] = model
+            return title, summary, False
+    # A paid draft that fails the fact gate OR the headline/summary gates
+    # stops the LLM tiers here: never pay for a second opinion, and never ask
+    # the free tier to redo work the paid tier already failed at.
     ledger.record_error("gate-rejected", now)
     return "", "", True
 

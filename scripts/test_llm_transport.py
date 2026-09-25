@@ -226,6 +226,12 @@ def main() -> int:
             empty.record_subscription_call(NOW)
             check("hourly cap", llm.subscription_block_reason(sub, empty, fresh, NOW) == "hourly-cap")
 
+            print("subscription_block_reason survives a malformed quota value")
+            check("list quota -> quota-unknown", llm.subscription_block_reason(sub, empty, [], NOW) == "quota-unknown")
+            check("string at -> quota-unknown",
+                  llm.subscription_block_reason(sub, empty, {"at": "soon", "usableProfiles": 3}, NOW)
+                  == "quota-unknown")
+
             print("subscription pause")
             paused = llm.Ledger(Path(directory) / "paused.json", load, save)
             check("not paused by default", not paused.subscription_paused(NOW))

@@ -215,9 +215,16 @@ def subscription_block_reason(cfg: dict, ledger: Ledger, quota: dict, now: float
         return "disabled"
     if ledger.subscription_paused(now):
         return "paused"
-    if now - float(quota.get("at", 0) or 0) > float(cfg.get("quotaCacheMaxAgeMinutes", 120)) * 60:
+    if not isinstance(quota, dict):
         return "quota-unknown"
-    if int(quota.get("usableProfiles", 0) or 0) < int(cfg.get("minUsableProfiles", 2)):
+    try:
+        quota_age_seconds = now - float(quota.get("at", 0) or 0)
+        usable_profiles = int(quota.get("usableProfiles", 0) or 0)
+    except (TypeError, ValueError):
+        return "quota-unknown"
+    if quota_age_seconds > float(cfg.get("quotaCacheMaxAgeMinutes", 120)) * 60:
+        return "quota-unknown"
+    if usable_profiles < int(cfg.get("minUsableProfiles", 2)):
         return "too-few-accounts"
     if ledger.subscription_calls(now) >= int(cfg.get("maxCallsPerHour", 10)):
         return "hourly-cap"

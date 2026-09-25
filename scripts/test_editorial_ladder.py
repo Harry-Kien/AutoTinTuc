@@ -23,11 +23,22 @@ import fastnews247_mvp as bot  # noqa: E402
 
 failures: list[str] = []
 KEY_ENV = "TEST_LADDER_OPENAI_KEY"
-GOOD = {"title": "Vàng tăng 2,5% khi Fed giữ nguyên lãi suất",
+# The headline gate requires >=45 chars and >=7 words, so GOOD's title carries
+# extra (fact-clean) context beyond the bare event; the summary must still add
+# >=4 new terms over the title to clear the "adds no new information" gate.
+GOOD = {"title": "Vàng tăng 2,5% khi Fed giữ nguyên lãi suất trong phiên thứ Ba",
         "summary": "Vàng tăng 2,5% hôm thứ Ba sau khi Fed giữ nguyên lãi suất, theo giới phân tích."}
 INVENTED = {"title": "Vàng tăng 7,9% khi Fed giữ nguyên lãi suất",
             "summary": "Vàng tăng 7,9% hôm thứ Ba, theo giới phân tích."}
+# Fact-clean (same numbers/claims as GOOD) but the old, too-thin 42-char title:
+# passes _validated_rewrite, must still be rejected at tier acceptance.
+THIN = {"title": "Vàng tăng 2,5% khi Fed giữ nguyên lãi suất",
+        "summary": "Vàng tăng 2,5% hôm thứ Ba sau khi Fed giữ nguyên lãi suất, theo giới phân tích."}
 TRANSLATED = ("Vàng tăng 2,5% sau quyết định của Fed", "Bản dịch máy của tin vàng hôm thứ Ba.")
+# A translation stand-in that itself clears the headline/summary gates, for the
+# end-to-end draft_post test where every ladder tier returns a thin draft.
+TRANSLATED_OK = ("Vàng tăng 2,5% khi Fed giữ nguyên lãi suất theo bản dịch máy",
+                 "Bản dịch máy cho biết vàng tăng 2,5% hôm thứ Ba nhờ lực mua từ nhà đầu tư.")
 
 
 def make_config(order, max_per_hour=10):
@@ -57,6 +68,8 @@ def check(name: str, condition: bool, detail: object = "") -> None:
 
 def item(score: int) -> dict:
     return {"title": "Gold climbs 2.5% as the Fed holds rates", "score": score,
+            "source": "Test Wire",
+            "source_article_verified": True,
             "article_text": "Gold climbed 2.5% on Tuesday after the Fed held rates steady, analysts said. "
                             "Traders now watch the next inflation report."}
 
@@ -164,6 +177,49 @@ def main() -> int:
                   ledger_day(root))
             check("gate miss does not pause", ledger_data(root)["subscriptionPausedUntil"] == 0)
 
+        print("subscription draft is fact-clean but headline-too-thin -> API rewrites, no pause")
+        with tempfile.TemporaryDirectory() as directory:
+            root = fresh_root(directory, quota=True)
+            api, sub = FakeApi(GOOD), FakeSubscription(THIN)
+            install(api, sub)
+            news = item(4)
+            title, _ = bot.editorial_for(news, SUB_FIRST, None)
+            check("API's GOOD used after a thin subscription draft",
+                  title == GOOD["title"] and news["editorial_path"] == "openai",
+                  (title, news.get("editorial_path")))
+            check("thin draft recorded as subscription-gate-rejected",
+                  ledger_day(root)["errors"].get("subscription-gate-rejected") == 1, ledger_day(root))
+            check("a thin (fact-clean) draft does not pause the subscription",
+                  ledger_data(root)["subscriptionPausedUntil"] == 0)
+
+        print("paid draft is fact-clean but headline-too-thin -> translation, no second opinion")
+        with tempfile.TemporaryDirectory() as directory:
+            root = fresh_root(directory, quota=True)
+            api, sub = FakeApi(THIN), FakeSubscription(GOOD)
+            install(api, sub)
+            news = item(4)
+            title, _ = bot.editorial_for(news, API_FIRST, None)
+            check("thin paid draft -> translation", title == TRANSLATED[0] and news["editorial_path"] == "translate",
+                  title)
+            check("no second opinion bought after a thin paid draft", sub.calls == 0, sub.calls)
+            check("thin paid draft recorded as gate-rejected",
+                  ledger_day(root)["errors"].get("gate-rejected") == 1, ledger_day(root))
+
+        print("end to end: every ladder tier returns a thin draft -> draft_post still posts, from translation")
+        with tempfile.TemporaryDirectory() as directory:
+            root = fresh_root(directory, quota=True)
+            api, sub = FakeApi(THIN), FakeSubscription(THIN)
+            install(api, sub)
+            bot.vietnamese_editorial = lambda it: TRANSLATED_OK
+            try:
+                news = item(4)
+                post, issues = bot.draft_post(news, 4, ["#XAUUSD"], dict(SUB_FIRST, posting={}), None)
+                check("draft_post posts the translation when every ladder tier is thin",
+                      bool(post) and not issues and news.get("editorial_path") == "translate",
+                      (post, issues, news.get("editorial_path")))
+            finally:
+                bot.vietnamese_editorial = lambda it: TRANSLATED
+
         print("no quota file / hourly cap -> straight to API")
         with tempfile.TemporaryDirectory() as directory:
             root = fresh_root(directory, quota=False)
@@ -182,6 +238,49 @@ def main() -> int:
             bot.editorial_for(news, capped, None)
             check("hourly cap -> second item goes to API", sub.calls == 1 and len(api.calls) == 1
                   and news["editorial_path"] == "openai", (sub.calls, len(api.calls)))
+
+        print("an unreadable or malformed quota file never aborts the run -> subscription just gets skipped")
+        malformed_quotas = ["", "{not json", json.dumps([1, 2, 3]),
+                            json.dumps({"at": "soon", "usableProfiles": 3})]
+        for payload in malformed_quotas:
+            with tempfile.TemporaryDirectory() as directory:
+                root = fresh_root(directory, quota=False)
+                (root / bot.QUOTA_PATH).parent.mkdir(parents=True, exist_ok=True)
+                (root / bot.QUOTA_PATH).write_text(payload, encoding="utf-8")
+                api, sub = FakeApi(GOOD), FakeSubscription(GOOD)
+                install(api, sub)
+                news = item(4)
+                title, _ = bot.editorial_for(news, SUB_FIRST, None)
+                check(f"malformed quota {payload[:20]!r} -> subscription skipped, API used",
+                      sub.calls == 0 and title == GOOD["title"] and news["editorial_path"] == "openai",
+                      (payload[:20], sub.calls, title, news.get("editorial_path")))
+
+        print("a corrupt llm_ledger.json never aborts the run")
+        with tempfile.TemporaryDirectory() as directory:
+            root = fresh_root(directory, quota=True)
+            (root / bot.LEDGER_PATH).parent.mkdir(parents=True, exist_ok=True)
+            (root / bot.LEDGER_PATH).write_text("{not json", encoding="utf-8")
+            api, sub = FakeApi(GOOD), FakeSubscription(GOOD)
+            install(api, sub)
+            news = item(4)
+            title, _ = bot.editorial_for(news, SUB_FIRST, None)
+            check("corrupt ledger -> item still posted via subscription", title == GOOD["title"], title)
+            check("corrupt ledger recorded as ledger-unreadable",
+                  ledger_day(root)["errors"].get("ledger-unreadable") == 1, ledger_day(root))
+
+        print("a tier raising an unexpected exception falls to translation instead of crashing the run")
+        with tempfile.TemporaryDirectory() as directory:
+            root = fresh_root(directory, quota=False)
+            api, sub = FakeApi(error=KeyError("output")), FakeSubscription(GOOD)
+            install(api, sub)
+            news = item(4)
+            title, _ = bot.editorial_for(news, SUB_FIRST, None)
+            check("tier exception -> translation used",
+                  title == TRANSLATED[0] and news["editorial_path"] == "translate", title)
+            check("no quota file skips the subscription; the exploding tier is the API",
+                  sub.calls == 0, sub.calls)
+            check("tier exception recorded as ladder-exception-KeyError",
+                  ledger_day(root)["errors"].get("ladder-exception-KeyError") == 1, ledger_day(root))
 
         print("hot budget spent -> hot item drops to mini; daily cap -> translation")
         with tempfile.TemporaryDirectory() as directory:
