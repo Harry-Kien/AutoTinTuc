@@ -80,6 +80,45 @@ def main() -> int:
     check("CafeF banking item still #VNINDEX via its category", "#VNINDEX" in tags, tags)
     check("CafeF banking item still posts", score >= threshold, (score, reason))
 
+    print("clickbait from a channel is never published verbatim")
+    shouting = "ISRAEL SĂN ĐỔI TẬN CÙNG NGÕ HẺM,, CHẠY ĐÂU CHO THOÁT HẮN ĐÃ BỊ TIÊU DIỆT: chỉ huy Hamas bị hạ"
+    issues = bot.headline_quality_issues(shouting, {"source": "Coin369", "source_article_verified": True})
+    check("all-caps headline rejected", "shouting-headline" in issues, issues)
+    check("doubled comma rejected", "repeated-punctuation" in issues, issues)
+    normal = "Fed, ECB và BOJ giữ nguyên lãi suất trong tuần họp chính sách tháng 9"
+    issues = bot.headline_quality_issues(normal, {"source": "X", "source_article_verified": True})
+    check("normal headline with acronyms passes the caps gate", "shouting-headline" not in issues, issues)
+    check("ellipsis is not repeated punctuation here", "repeated-punctuation" not in issues, issues)
+
+    import fastnews247_llm as llm
+    saved = (llm.openai_editorial, llm.subscription_editorial, bot.vietnamese_editorial)
+    translate_calls = []
+    try:
+        llm.openai_editorial = lambda *a, **k: (_ for _ in ()).throw(llm.ApiError("network", retryable=True))
+        bot.vietnamese_editorial = lambda item: translate_calls.append(1) or ("copied", "copied.")
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            saved_root = bot.ROOT
+            bot.ROOT = Path(directory)
+            try:
+                channel_item = {"title": shouting, "score": 5, "source": "Coin369", "inline_article": shouting,
+                                "article_text": shouting, "source_article_verified": True}
+                cfg = dict(CONFIG)
+                title, summary = bot.ladder_rewrite(channel_item, cfg)
+                check("channel item with no LLM draft is dropped, not copied",
+                      (title, summary) == ("", "") and channel_item["editorial_path"] == "llm-required",
+                      (title, channel_item.get("editorial_path")))
+                check("translation never called for a channel item", translate_calls == [], translate_calls)
+                rss_item = {"title": "Gold rises 2% after the Fed decision", "score": 4, "source": "Wire",
+                            "article_text": "Gold rose 2% after the Fed decision, traders said.",
+                            "source_article_verified": True}
+                bot.ladder_rewrite(rss_item, cfg)
+                check("RSS items still fall back to translation", translate_calls == [1], translate_calls)
+            finally:
+                bot.ROOT = saved_root
+    finally:
+        llm.openai_editorial, llm.subscription_editorial, bot.vietnamese_editorial = saved
+
     print("the editorial prompt states the gates the drafts are held to")
     prompt = bot.EDITORIAL_PROMPT
     check("headline length rule in prompt", "45-220" in prompt and "7 tu" in prompt)

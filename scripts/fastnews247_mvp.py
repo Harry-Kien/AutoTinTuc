@@ -913,6 +913,11 @@ def headline_quality_issues(headline: str, item: dict) -> list[str]:
         issues.append("incomplete-headline")
     if "?" in headline:
         issues.append("question-or-teaser-headline")
+    letters = [char for char in headline if char.isalpha()]
+    if len(letters) >= 20 and sum(char.isupper() for char in letters) / len(letters) > 0.5:
+        issues.append("shouting-headline")
+    if re.search(r"([,.;:!])\1", headline.replace("...", "")):
+        issues.append("repeated-punctuation")
     if any(phrase in normalized for phrase in GENERIC_HEADLINE_PHRASES):
         issues.append("generic-headline")
     advice_patterns = (
@@ -1082,7 +1087,8 @@ RANG BUOC BAT BUOC:
 TIEU DE (title): 45-220 ky tu, it nhat 7 tu, tieng Viet co dau. Phai neu ro CHU THE
 va HANH DONG/su kien (cong bo, tang, giam, giu nguyen, tan cong, dat thoa thuan...)
 hoac mot so lieu cu the. Khong dat cau hoi, khong cau moi (teaser), khong "...",
-khong ket thuc bang dau phay hay gach ngang.
+khong ket thuc bang dau phay hay gach ngang. Viet hoa binh thuong (khong viet hoa
+toan bo cau), bo giong giat tit va tu ngu cam tinh cua nguon; giu giong trung tinh.
 
 TOM TAT (summary): 1-2 cau HOAN CHINH, moi cau it nhat 8 tu, ket thuc bang dau
 cham, tong toi da 520 ky tu. Phai bo sung it nhat 4 tu/y moi so voi tieu de (boi
@@ -1274,6 +1280,13 @@ def ladder_rewrite(item: dict, config: dict, now: float | None = None) -> tuple[
             pass
     if title and summary:
         return title, summary
+    if item.get("inline_article") is not None:
+        # A channel post (Coin369) is already Vietnamese, so "translating" it
+        # would publish the source's own words verbatim - its caps and
+        # clickbait included. Such items are posted only when an LLM tier
+        # rewrote them; otherwise the item is dropped (and remembered).
+        item["editorial_path"] = "llm-required"
+        return "", ""
     item["editorial_path"] = "translate"
     return vietnamese_editorial(item)
 
