@@ -116,12 +116,39 @@ class Guards(unittest.TestCase):
             self.assertEqual([v.get("postedTitle") for v in state["seen"].values()], [vi])
 
     def test_helper(self):
-        state = {"seen": {"a": {"postedTitle": POSTED_VI}}}
+        state = {"seen": {"a": {"postedTitle": POSTED_VI, "time": time.time()}}}
         self.assertTrue(n.duplicates_posted_vietnamese(POSTED_VI, state, []))
         self.assertTrue(n.duplicates_posted_vietnamese(POSTED_VI, {"seen": {}}, [{"vi_title": POSTED_VI}]))
         self.assertFalse(n.duplicates_posted_vietnamese("", state, []))
         self.assertFalse(n.duplicates_posted_vietnamese(
             "Dầu tăng 3% sau khi OPEC đồng ý gia hạn cắt giảm sản lượng", state, []))
+
+    def test_duplicates_posted_vietnamese_ignores_stale_pending_records(self):
+        stale = {"seen": {"a": {"postedTitle": POSTED_VI, "time": time.time() - 100 * 3600}}}
+        fresh = {"seen": {"a": {"postedTitle": POSTED_VI, "time": time.time()}}}
+        self.assertFalse(n.duplicates_posted_vietnamese(POSTED_VI, stale, []),
+                          "a 100-hour-old pending record should not suppress forever")
+        self.assertTrue(n.duplicates_posted_vietnamese(POSTED_VI, fresh, []))
+
+
+class SameVietnameseEvent(unittest.TestCase):
+    def test_different_month_is_not_the_same_event(self):
+        self.assertFalse(n.same_vietnamese_event(
+            "Fed giữ nguyên lãi suất trong cuộc họp tháng 9, cảnh báo rủi ro lạm phát",
+            "Fed giữ nguyên lãi suất trong cuộc họp tháng 10, cảnh báo rủi ro lạm phát"))
+
+    def test_different_institution_is_not_the_same_event(self):
+        self.assertFalse(n.same_vietnamese_event(
+            "Ngân hàng Nhà nước giữ nguyên lãi suất điều hành trong tháng 9",
+            "Ngân hàng Trung ương châu Âu giữ nguyên lãi suất điều hành trong tháng 9"))
+
+    def test_identical_title_is_the_same_event(self):
+        self.assertTrue(n.same_vietnamese_event(POSTED_VI, POSTED_VI))
+
+    def test_near_duplicate_wording_is_the_same_event(self):
+        self.assertTrue(n.same_vietnamese_event(
+            "Vàng tăng 2,5% sau khi Fed giữ nguyên lãi suất, theo giới phân tích",
+            "Vàng tăng 2,5% sau khi Fed giữ nguyên lãi suất, theo các nhà phân tích"))
 
 
 if __name__ == "__main__":

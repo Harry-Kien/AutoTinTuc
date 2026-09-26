@@ -1766,7 +1766,8 @@ def run_once(config: dict, post: bool = False) -> int:
             rejected.append(f"{item['source']}: duplicate-event :: {item['title']}")
             continue
         # A source already in Vietnamese can be checked before paying for it.
-        if looks_vietnamese(item.get("title", "")) and duplicates_posted_vietnamese(item["title"], state, selected):
+        if looks_vietnamese(item.get("title", "")) and duplicates_posted_vietnamese(
+                item["title"], state, selected, config["posting"]["duplicateWindowHours"]):
             rejected.append(f"{item['source']}: duplicate-event-vi :: {item['title'][:120]}")
             continue
         # One source publishing a burst should not take every slot in a run.
@@ -1817,7 +1818,8 @@ def run_once(config: dict, post: bool = False) -> int:
             rejected_at[item["fingerprint"]] = time.time()
             rejected.append(f"{item['source']}: {','.join(quality_issues)} :: {item['title'][:120]}")
             continue
-        if duplicates_posted_vietnamese(item.get("vi_title", ""), state, selected):
+        if duplicates_posted_vietnamese(item.get("vi_title", ""), state, selected,
+                                        config["posting"]["duplicateWindowHours"]):
             rejected_at[item["fingerprint"]] = time.time()
             rejected.append(f"{item['source']}: duplicate-event-vi :: {item['title'][:120]}")
             continue
@@ -1898,17 +1900,59 @@ def same_event(first, second):
                  and _fact_numbers(first.get("title", "")) == _fact_numbers(second.get("title", "")))))
 
 
-def duplicates_posted_vietnamese(title: str, state: dict, selected: list[dict]) -> bool:
+# same_event's word-set comparison drops tokens under 3 characters and treats
+# a full set match as sufficient. Vietnamese titles are mostly short syllables
+# and a changed month/institution is often the only difference, so that
+# comparison calls genuinely different stories the same event. Below this
+# bigram-overlap threshold, two titles differ enough (a different actor, a
+# different month) to be treated as different events.
+VIETNAMESE_EVENT_BIGRAM_THRESHOLD = 0.6
+
+
+def _vietnamese_tokens(text: str) -> list[str]:
+    return re.findall(r"[0-9a-zà-ỹđ]+", normalize_text(text))
+
+
+def _adjacent_bigrams(tokens: list[str]) -> set[str]:
+    return {f"{tokens[i]} {tokens[i + 1]}" for i in range(len(tokens) - 1)}
+
+
+def same_vietnamese_event(first: str, second: str) -> bool:
+    """Compare two Vietnamese titles for the same underlying event.
+
+    Unlike same_event, this keeps every syllable (including short ones and
+    single digits) and compares adjacent-syllable bigrams, so "tháng 9" and
+    "tháng 10" or two different institutions don't collapse into a match.
+    """
+    numbers_a = {value.replace(",", ".") for value in re.findall(r"\d+(?:[.,]\d+)?", first)}
+    numbers_b = {value.replace(",", ".") for value in re.findall(r"\d+(?:[.,]\d+)?", second)}
+    if numbers_a != numbers_b:
+        return False
+    bigrams_a = _adjacent_bigrams(_vietnamese_tokens(first))
+    bigrams_b = _adjacent_bigrams(_vietnamese_tokens(second))
+    if not bigrams_a or not bigrams_b:
+        return False
+    jaccard = len(bigrams_a & bigrams_b) / len(bigrams_a | bigrams_b)
+    return jaccard >= VIETNAMESE_EVENT_BIGRAM_THRESHOLD
+
+
+def duplicates_posted_vietnamese(title: str, state: dict, selected: list[dict],
+                                 window_hours: float = 72) -> bool:
     """Compare a Vietnamese title with the Vietnamese titles already published.
 
-    same_event compares words, so an English source and a Vietnamese one about
-    the same event can only meet here, after both are in Vietnamese.
+    same_vietnamese_event compares syllable bigrams, so an English source and
+    a Vietnamese one about the same event can only meet here, after both are
+    in Vietnamese. Only seen records posted within window_hours count, since
+    a pending (unconfirmed) record can otherwise suppress stories forever;
+    items already selected this run are always compared.
     """
     if not title:
         return False
-    others = [record.get("postedTitle", "") for record in state.get("seen", {}).values()]
+    horizon = time.time() - window_hours * 3600
+    others = [record.get("postedTitle", "") for record in state.get("seen", {}).values()
+              if record.get("time", 0) >= horizon]
     others += [chosen.get("vi_title", "") for chosen in selected]
-    return any(other and same_event({"title": title}, {"title": other}) for other in others)
+    return any(other and same_vietnamese_event(title, other) for other in others)
 
 
 @contextmanager
