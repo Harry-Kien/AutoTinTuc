@@ -130,6 +130,24 @@ def main() -> int:
     issues = bot.headline_quality_issues(vague, ok_meta)
     check("vague headline still rejected", bool(issues), issues)
 
+    print("recurring non-market filler scores zero")
+    for title in ("Vận động viên Iran giành huy chương bạc 400 mét nữ tại Asian Games",
+                  "Macquarie xếp hạng Outperform cho NSE với giá mục tiêu 1.965 rupee",
+                  "Mauritius từ chối cấp phép hạ cánh cho chuyến bay từ Israel",
+                  "Cầu kính Rồng Mây ở Lai Châu tiếp tục đón khách từ ngày 1/10"):
+        score, tags, reason = bot.score_item(coin(title), CONFIG)
+        check(f"filler dropped: {title[:45]}", score == 0 and reason == "low-value", (score, reason))
+    score, _, _ = bot.score_item(coin("Quân đội Ukraine cho biết đã tấn công nhà máy lọc dầu Ilsky ở miền nam nước Nga."), CONFIG)
+    check("real war/oil news unaffected by the filler filter", score >= threshold, score)
+
+    print("more newsroom verbs recognised; unbalanced quotes rejected")
+    for headline in ("Cơ quan quản lý Bắc Carolina bác dự án nhà máy khí của Duke Energy",
+                     "Ngoại trưởng Iran nêu điều kiện đàm phán với Washington tại New York"):
+        issues = bot.headline_quality_issues(headline, ok_meta)
+        check(f"main event recognised: {headline[:45]}", "main-event-not-explicit" not in issues, issues)
+    issues = bot.summary_quality_issues('Bộ Tài chính cho biết "sẽ điều chỉnh thuế nhập khẩu xăng dầu trong tháng tới.', {"article_text": ""}, "x")
+    check("unbalanced quote rejected", "unbalanced-quote-summary" in issues, issues)
+
     print("the editorial prompt states the gates the drafts are held to")
     prompt = bot.EDITORIAL_PROMPT
     check("headline length rule in prompt", "45-220" in prompt and "7 tu" in prompt)

@@ -621,6 +621,18 @@ def clean_asset_matches(item: dict, matches: dict[str, int]) -> dict[str, int]:
     return cleaned
 
 
+LOW_VALUE_TERMS = (
+    "before you deposit", "is it safe", "how to", "what to know", "explainer", "có nên", "co nen",
+    "kinh nghiệm", "kinh nghiem", "bệnh viện", "benh vien", "thu hồi xe", "thu hoi xe",
+    "sports", "nations league", "premier league", "football", "soccer", "asian games",
+    "huy chương", "huy chuong", "đội tuyển", "doi tuyen", "thi đấu", "thi dau",
+    "share price target", "price target", "stock rating", "analyst rating", "outperform",
+    "underperform", "buy rating", "sell rating", "khuyến nghị cổ phiếu", "khuyen nghi co phieu",
+    "giá mục tiêu", "gia muc tieu", "hạ cánh", "ha canh", "airline", "airways", "flight",
+    "chuyến bay", "chuyen bay", "cầu kính", "cau kinh", "du lịch", "du lich",
+)
+
+
 def score_item(item: dict, config: dict) -> tuple[int, list[str], str]:
     primary_text = normalize_text(" ".join([item.get("title", ""), item.get("category", "")]))
     text = normalize_text(" ".join([primary_text, item.get("summary", "")]))
@@ -629,6 +641,12 @@ def score_item(item: dict, config: dict) -> tuple[int, list[str], str]:
 
     matches = clean_asset_matches(item, asset_matches(primary_text, config))
     high_terms = [term for term in config.get("highImpactTerms", []) if term_matches(text, term)]
+
+    # Recurring non-market filler seen on the channel (ported from the
+    # 2026-09-27 VPS edits): sports, exchange reviews, analyst price targets,
+    # airline route news, hospital and recall items.
+    if any(term_matches(text, term) for term in LOW_VALUE_TERMS):
+        return 0, [], "low-value"
 
     score = 1
     score += min(2, len(matches))
@@ -798,7 +816,8 @@ VIETNAMESE_EVENT_VERBS = (
     "khởi kiện", "kiện", "cáo buộc", "điều tra", "bắt giữ", "tiêu diệt", "không kích",
     "rời", "từ chức", "bổ nhiệm", "sáp nhập", "thâu tóm", "niêm yết", "phá sản",
     "leo thang", "hạ nhiệt", "phục hồi", "lao dốc", "tăng vọt", "chạm", "lập đỉnh",
-    "thu hút", "rút", "bơm", "siết", "nới", "cần",
+    "thu hút", "rút", "bơm", "siết", "nới", "cần", "bác", "giành", "đón", "nêu",
+    "phát biểu", "họp", "xếp hạng", "chấp nhận", "khẳng định", "phê phán", "chỉ trích", "đe dọa",
     "dừng", "tạm dừng", "hoãn", "mở rộng", "thu hẹp", "chuyển", "trao", "nhận",
 )
 
@@ -976,6 +995,8 @@ def summary_quality_issues(summary: str, item: dict, title: str = "") -> list[st
     issues = []
     if "..." in summary or "…" in summary or not re.search(r'[.!?][”"’]?$', summary):
         issues.append("incomplete-summary")
+    if summary.count('"') % 2 or summary.count("“") != summary.count("”"):
+        issues.append("unbalanced-quote-summary")
     sentences = split_complete_sentences(summary)
     if not summary or not (1 <= len(sentences) <= 2):
         issues.append("summary-must-have-1-or-2-complete-sentences")
