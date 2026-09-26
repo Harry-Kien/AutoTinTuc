@@ -136,23 +136,41 @@ def term_matches(text: str, term: str) -> bool:
 FETCH_AUDIT = {}
 
 
-def fetch_url(url: str, timeout: int = 10) -> bytes:
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "TinNhanh247/1.0",
-            "Cache-Control": "no-cache",
-            "Pragma": "no-cache",
-            "Accept": "application/rss+xml, application/xml, text/xml, */*",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+class FeedNotModified(Exception):
+    """The server answered 304: the feed is unchanged since the cached copy."""
+
+
+FEED_CACHE: dict = {}
+FEED_CACHE_PATH = Path("storage/fastnews247/feed_cache.json")
+
+
+def fetch_url(url: str, timeout: int = 10, validators: dict | None = None) -> bytes:
+    headers = {
+        "User-Agent": "TinNhanh247/1.0",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Accept": "application/rss+xml, application/xml, text/xml, */*",
+    }
+    if validators:
+        if validators.get("etag"):
+            headers["If-None-Match"] = validators["etag"]
+        if validators.get("lastModified"):
+            headers["If-Modified-Since"] = validators["lastModified"]
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        opened = urllib.request.urlopen(request, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 304:
+            raise FeedNotModified(url) from None
+        raise
+    with opened as response:
         raw = response.read(4_000_001)
         if len(raw) > 4_000_000:
             raise ValueError("response-too-large")
         FETCH_AUDIT[url] = {"httpDate": response.headers.get("Date"),
                             "age": response.headers.get("Age"),
                             "lastModified": response.headers.get("Last-Modified"),
+                            "etag": response.headers.get("ETag"),
                             "cache": response.headers.get("X-Cache"),
                             "sha256": hashlib.sha256(raw).hexdigest(),
                             "fetchedAt": dt.datetime.now(dt.timezone.utc).isoformat()}
@@ -170,10 +188,28 @@ def child_text(node: ET.Element, names: list[str]) -> str:
 
 
 def parse_feed(feed: dict) -> list[dict]:
-    raw = fetch_url(feed["url"], timeout=int(feed.get("timeoutSeconds", 10)))
+    url = feed["url"]
+    timeout = int(feed.get("timeoutSeconds", 10))
+    cached = FEED_CACHE.get(url) or {}
+    validators = {key: cached[key] for key in ("etag", "lastModified") if cached.get(key)}
+    try:
+        raw = (fetch_url(url, timeout=timeout, validators=validators) if validators
+               else fetch_url(url, timeout=timeout))
+    except FeedNotModified:
+        # Unchanged feed: hand back the cached items, not nothing. An item a
+        # previous run skipped for budget reasons must stay a candidate.
+        return [dict(item) for item in cached.get("items", [])]
     if feed.get("type") == "telegram_public":
-        return parse_telegram_channel(raw, feed)
-    return parse_rss_items(raw, feed)
+        items = parse_telegram_channel(raw, feed)
+    else:
+        items = parse_rss_items(raw, feed)
+    audit = FETCH_AUDIT.get(url, {})
+    if audit.get("etag") or audit.get("lastModified"):
+        FEED_CACHE[url] = {"etag": audit.get("etag"), "lastModified": audit.get("lastModified"),
+                           "items": [dict(item) for item in items]}
+    else:
+        FEED_CACHE.pop(url, None)
+    return items
 
 
 def parse_rss_items(raw: bytes, feed: dict) -> list[dict]:
@@ -1670,6 +1706,10 @@ def run_once(config: dict, post: bool = False) -> int:
     output_path = ROOT / config["channel"]["draftOutput"]
     state = prune_state(load_json(state_path, {"seen": {}}), config["posting"]["duplicateWindowHours"])
 
+    cache_path = ROOT / FEED_CACHE_PATH
+    FEED_CACHE.clear()
+    FEED_CACHE.update(load_json(cache_path, {}) or {})
+
     candidates = []
     errors = []
     rejected = []
@@ -1811,6 +1851,12 @@ def run_once(config: dict, post: bool = False) -> int:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines), encoding="utf-8")
+    horizon = time.time() - int(config["posting"].get("maximumAgeMinutes", 240)) * 60
+    configured = {feed["url"] for feed in config["feeds"]}
+    save_json(cache_path, {
+        url: {**entry, "items": [cached_item for cached_item in entry.get("items", [])
+                                 if parse_time(cached_item.get("published", "")) >= horizon]}
+        for url, entry in FEED_CACHE.items() if url in configured})
     save_json(state_path, state)
     print(f"Drafts: {len(selected)} -> {output_path}")
     if errors:
