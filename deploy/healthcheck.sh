@@ -16,7 +16,7 @@ export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 
 BOT_DIR="$HOME/AutoTinTuc"
 ALERT_TARGET="${FASTNEWS247_ALERT_TARGET:-}"
-QUIET_HOURS_LIMIT=3       # no post for this long -> problem
+QUIET_HOURS_LIMIT=1       # no post for this long -> problem (gap fill posts every 20 min)
 WEEK_QUOTA_FLOOR=20       # percent
 TOKEN_DAYS_FLOOR=3
 

@@ -15,6 +15,8 @@
     "requirePublishedTime": true,
     "maxPostsPerRun": 6,
     "rejectRetryMinutes": 60,
+    "gapFillMinutes": 20,
+    "gapFillMinScore": 2,
     "requireVietnameseBeforePosting": true,
     "requireSourceName": true,
     "requireSourceArticle": true,

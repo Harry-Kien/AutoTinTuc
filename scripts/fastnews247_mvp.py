@@ -1822,6 +1822,23 @@ def run_once(config: dict, post: bool = False) -> int:
     output_path = ROOT / config["channel"]["draftOutput"]
     state = prune_state(load_json(state_path, {"seen": {}}), config["posting"]["duplicateWindowHours"])
 
+    # Gap fill: the channel must never go quiet for longer than gapFillMinutes.
+    # When it has, one post may come from below the normal score threshold -
+    # the best fresh item left - still held to every quality and fact gate.
+    posting = config["posting"]
+    draft_floor = int(posting["minimumScoreToDraft"])
+    post_floor = int(posting["minimumScoreToPost"])
+    normal_floor = post_floor
+    gap_minutes = float(posting.get("gapFillMinutes", 0) or 0)
+    last_post = max((record.get("time", 0) for record in state["seen"].values()
+                     if record.get("status") == "confirmed"), default=0)
+    gap_fill = bool(post and gap_minutes > 0 and time.time() - last_post >= gap_minutes * 60)
+    if gap_fill:
+        gap_floor = int(posting.get("gapFillMinScore", 2))
+        draft_floor, post_floor = min(draft_floor, gap_floor), min(post_floor, gap_floor)
+        quiet = round((time.time() - last_post) / 60) if last_post else "∞"
+        print(f"Gap fill: no post for {quiet} min - one post may score >= {gap_floor}", flush=True)
+
     cache_path = ROOT / FEED_CACHE_PATH
     FEED_CACHE.clear()
     # A damaged cache file only costs a cold fetch; it must never stop the run.
@@ -1868,17 +1885,21 @@ def run_once(config: dict, post: bool = False) -> int:
                     rejected.append(f"{feed['name']}: {freshness} :: {item['title'][:120]}")
                     continue
                 score, tags, reason = score_item(item, config)
-                if score >= config["posting"]["minimumScoreToDraft"]:
+                if score >= draft_floor:
                     item.update({"score": score, "tags": tags, "reason": reason})
                     candidates.append(item)
 
     candidates.sort(key=lambda item: (item["score"], parse_time(item.get("published", ""))), reverse=True)
     if post:
-        candidates = [item for item in candidates if item["score"] >= config["posting"]["minimumScoreToPost"]]
+        candidates = [item for item in candidates if item["score"] >= post_floor]
     selected = []
     article_checks = 0
     max_article_checks = int(config["posting"].get("maxArticleChecksPerRun", 8))
     for item in candidates:
+        below_normal = item["score"] < normal_floor
+        if below_normal and (selected or not gap_fill):
+            # Below-threshold items only ever fill a gap, and only one per run.
+            continue
         if any(same_event(item, previous) for previous in list(state["seen"].values()) + selected):
             rejected.append(f"{item['source']}: duplicate-event :: {item['title']}")
             continue
@@ -1941,8 +1962,9 @@ def run_once(config: dict, post: bool = False) -> int:
             rejected.append(f"{item['source']}: duplicate-event-vi :: {item['title'][:120]}")
             continue
         item["draft"] = draft
+        item["gap_fill"] = below_normal
         selected.append(item)
-        if len(selected) >= config["posting"]["maxPostsPerRun"]:
+        if below_normal or len(selected) >= config["posting"]["maxPostsPerRun"]:
             break
 
     now = dt.datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
@@ -1961,7 +1983,7 @@ def run_once(config: dict, post: bool = False) -> int:
     for index, item in enumerate(selected, start=1):
         draft = item["draft"]
         lines.extend([f"## Draft {index}", "", draft, "", f"Reason: {item['reason']}", ""])
-        if post and item["score"] >= config["posting"]["minimumScoreToPost"]:
+        if post and item["score"] >= post_floor:
             if config["posting"].get("requireVietnameseBeforePosting", True) and "Cần OpenClaw viết lại" in draft:
                 print(f"Skipped live post needing Vietnamese rewrite: {item['title']}")
             else:
@@ -1970,6 +1992,7 @@ def run_once(config: dict, post: bool = False) -> int:
                           "score": item["score"], "link": item.get("link", ""),
                           "postedTitle": item.get("vi_title", ""),
                           "editorialPath": item.get("editorial_path", ""),
+                          "gapFill": bool(item.get("gap_fill")),
                           "status": "pending", "reason": "write-ahead-send-intent"}
                 state["seen"][item["fingerprint"]] = record
                 save_json(state_path, state)

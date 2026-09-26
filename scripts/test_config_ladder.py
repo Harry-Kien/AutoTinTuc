@@ -44,6 +44,8 @@ def main() -> int:
     check("direct transport", posting["telegram"]["mode"] == "direct", posting["telegram"])
     check("maxPostsPerRun 6", posting["maxPostsPerRun"] == 6, posting["maxPostsPerRun"])
     check("rejectRetryMinutes 60", posting.get("rejectRetryMinutes") == 60, posting.get("rejectRetryMinutes"))
+    check("gap fill every 20 min from score 2", (posting.get("gapFillMinutes"), posting.get("gapFillMinScore")) == (20, 2),
+          (posting.get("gapFillMinutes"), posting.get("gapFillMinScore")))
     coin = [feed for feed in config["feeds"] if feed["name"] == "Coin369"]
     check("Coin369 feed present once", len(coin) == 1, coin)
     if coin:
