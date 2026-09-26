@@ -42,7 +42,7 @@ python scripts/fastnews247_mvp.py --test-telegram "ping"   # thử kết nối T
 python scripts/fastnews247_source_probe.py         # kiểm tra nguồn RSS
 ```
 
-## Ba chế độ biên tập
+## Bốn chế độ biên tập
 
 Chọn bằng `editorial.mode`. Mặc định là `translate` — không gọi LLM, không tốn hạn mức.
 
@@ -51,6 +51,24 @@ Chọn bằng `editorial.mode`. Mặc định là `translate` — không gọi L
 | `translate` | Google Translate + kiểm tra ngặt (như cũ) | 0 |
 | `auto` | Dịch máy trước; **chỉ** gọi LLM để cứu tin sắp bị loại | Thấp |
 | `openclaw` | LLM viết trước, dịch máy là dự phòng | Cao nhất |
+| `ladder` | Subscription viết trước (miễn phí, có kiểm soát); lỗi thì OpenAI API viết ngay (5 sao: `gpt-5.5`, còn lại: `gpt-5.4-mini`); dịch máy là sàn | Phần lớn miễn phí; API có trần `dailyBudgetUsd` |
+
+### `ladder` — chế độ đang chạy trên VPS
+
+- Thứ tự theo `editorial.order` (`["subscription", "openai"]`): subscription
+  được thử trước. Bị chặn, không trả lời hoặc viết sai số liệu thì API viết
+  ngay; API viết sai số liệu thì dùng dịch máy.
+- Subscription chỉ được gọi khi còn ≥ 2 tài khoản OAuth không bị cooldown
+  (healthcheck ghi vào `subscription_quota.json` mỗi giờ) và chưa quá 10 lần
+  trong giờ. Không trả lời thì tạm dừng 15 phút (`pauseMinutesAfterFailure`)
+  để các tin sau đi thẳng sang API.
+- Chi phí thật ghi ở `storage/fastnews247/llm_ledger.json`, theo ngày giờ Việt
+  Nam. Vượt `dailyBudgetUsd` thì ngừng gọi API; tin HOT có ngân sách riêng
+  `hotDailyBudgetUsd`.
+- Key hỏng hoặc hết tiền (401/403/`insufficient_quota`): API tự tắt 30 phút và
+  `healthcheck.sh` báo về Telegram.
+- Tin trượt cổng được ghi nhớ 60 phút (`rejectRetryMinutes`) để không phải trả
+  tiền viết lại mỗi 2 phút.
 
 `auto` tồn tại vì lý do rất thực tế. LLM chạy trên hạn mức gói ChatGPT, mà
 `vietnamese_editorial` được gọi cho **mọi ứng viên**, không phải chỉ bài sắp đăng:

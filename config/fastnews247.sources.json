@@ -13,14 +13,15 @@
     "maximumAgeMinutes": 480,
     "futureToleranceMinutes": 15,
     "requirePublishedTime": true,
-    "maxPostsPerRun": 3,
+    "maxPostsPerRun": 6,
+    "rejectRetryMinutes": 60,
     "requireVietnameseBeforePosting": true,
     "requireSourceName": true,
     "requireSourceArticle": true,
     "maxArticleChecksPerRun": 30,
     "telegram": {
       "enabled": true,
-      "mode": "bridge",
+      "mode": "direct",
       "tokenEnv": "FASTNEWS247_TELEGRAM_BOT_TOKEN",
       "channelEnv": "FASTNEWS247_TELEGRAM_CHANNEL_ID",
       "channelId": "@fastnews247vn"
@@ -29,11 +30,34 @@
     "maxPostsPerSourcePerRun": 1
   },
   "editorial": {
-    "mode": "auto",
+    "mode": "ladder",
+    "order": ["subscription", "openai"],
     "maxLlmCallsPerRun": 2,
-    "model": "openai/gpt-5.5",
-    "sessionKey": "agent:main:fastnews247-editor",
-    "timeoutSeconds": 180
+    "openai": {
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "model": "gpt-5.4-mini",
+      "hotModel": "gpt-5.5",
+      "hotMinScore": 5,
+      "reasoningEffort": "low",
+      "timeoutSeconds": 45,
+      "maxOutputTokens": 2000,
+      "sourceChars": 3000,
+      "dailyBudgetUsd": 3.0,
+      "hotDailyBudgetUsd": 1.5,
+      "pricesPerMTok": {
+        "gpt-5.4-mini": {"input": 0.75, "output": 4.50},
+        "gpt-5.5": {"input": 5.00, "output": 30.00}
+      }
+    },
+    "subscription": {
+      "enabled": true,
+      "model": "openai/gpt-5.5",
+      "maxCallsPerHour": 10,
+      "minUsableProfiles": 2,
+      "quotaCacheMaxAgeMinutes": 120,
+      "pauseMinutesAfterFailure": 15,
+      "timeoutSeconds": 120
+    }
   },
   "fetching": {
     "feedWorkers": 8
@@ -566,6 +590,7 @@
       "category": "war_geo",
       "priority": 3,
       "region": "us"
-    }
+    },
+    {"name": "Coin369", "type": "telegram_public", "url": "https://t.me/s/coin369channel", "category": "world_macro", "priority": 2, "sourceTier": "repost", "minimumTextChars": 80}
   ]
 }

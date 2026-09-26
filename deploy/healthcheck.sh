@@ -16,7 +16,7 @@ export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 
 BOT_DIR="$HOME/AutoTinTuc"
 ALERT_TARGET="${FASTNEWS247_ALERT_TARGET:-}"
-QUIET_HOURS_LIMIT=12      # no post for this long -> problem
+QUIET_HOURS_LIMIT=3       # no post for this long -> problem
 WEEK_QUOTA_FLOOR=20       # percent
 TOKEN_DAYS_FLOOR=3
 
@@ -83,6 +83,49 @@ if printf '%s' "$models" | grep -q "status=missing"; then
   problems+=("Runtime auth = missing - model khong dung duoc")
 fi
 
+# --- tai khoan subscription cho bac du phong ------------------------------
+# openclaw khong doc duoc han muc tuan cua OpenAI ("Unsupported provider"),
+# nen bot dung so tai khoan OAuth khong bi cooldown lam tin hieu thay the.
+usable=$(printf '%s' "$models" | grep -oP 'openai:[^=,| ]+=OAuth \([^)]*\)(?! \[cooldown)' | wc -l)
+note "tai khoan OAuth dung duoc" "$usable"
+quota_file="$BOT_DIR/storage/fastnews247/subscription_quota.json"
+mkdir -p "$(dirname "$quota_file")"
+printf '{"at": %s, "usableProfiles": %s}\n' "$(date +%s)" "$usable" > "$quota_file.tmp" \
+  && mv "$quota_file.tmp" "$quota_file"
+
+# --- chi phi API va loi key -----------------------------------------------
+ledger_report=$(python3 - "$BOT_DIR" <<'PY'
+import datetime as dt, json, sys, time
+root = sys.argv[1]
+try:
+    config = json.load(open(f"{root}/config/fastnews247.sources.json", encoding="utf-8"))
+    ledger = json.load(open(f"{root}/storage/fastnews247/llm_ledger.json", encoding="utf-8"))
+except (OSError, ValueError):
+    print("note|chi phi API|chua co so ghi")
+    sys.exit(0)
+api = config.get("editorial", {}).get("openai", {})
+today = dt.datetime.now(dt.timezone(dt.timedelta(hours=7))).date().isoformat()
+day = ledger.get("days", {}).get(today, {})
+spend, cap = float(day.get("spendUsd", 0)), float(api.get("dailyBudgetUsd", 0))
+tiers = ", ".join(f"{k} {v}" for k, v in sorted(day.get("byTier", {}).items())) or "chua goi"
+print(f"note|chi phi API hom nay|{spend:.2f}/{cap:.2f} USD ({tiers})")
+if cap and spend >= cap:
+    print("problem|Da cham tran chi phi API hom nay - dang dung du phong")
+if float(ledger.get("apiDisabledUntil", 0) or 0) > time.time():
+    print(f"problem|OpenAI API dang bi tat ({ledger.get('lastApiError', '?')}) - kiem tra key/so du")
+if day.get("errors", {}).get("no-api-key"):
+    print("problem|Chua co OPENAI_API_KEY trong .env - bot dang dung dich may")
+if float(ledger.get("subscriptionPausedUntil", 0) or 0) > time.time():
+    print(f"note|subscription|tam dung ({ledger.get('lastSubscriptionError', '?')}) - dang dung API")
+PY
+)
+while IFS='|' read -r kind first second; do
+  case "$kind" in
+    note) note "$first" "$second" ;;
+    problem) problems+=("$first") ;;
+  esac
+done <<< "$ledger_report"
+
 # --- may chu --------------------------------------------------------------
 note "dia trong" "$(df -h / | awk 'NR==2{print $4}')"
 disk_pct=$(df / | awk 'NR==2{print $5}' | tr -d '%')
@@ -100,10 +143,25 @@ fi
 echo "  ==> CO VAN DE:"
 for p in "${problems[@]}"; do echo "      - $p"; done
 
+send_alert() {
+  local msg="$1" token
+  token=$(sed -n 's/^FASTNEWS247_TELEGRAM_BOT_TOKEN=//p' "$BOT_DIR/.env" 2>/dev/null | head -1 | tr -d '\r"')
+  if [ -n "$token" ]; then
+    # The URL carries the token, so it goes to curl on stdin, not on argv.
+    if printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$token" \
+        | curl -s -m 20 --config - --data-urlencode "chat_id=$ALERT_TARGET" \
+               --data-urlencode "text=$msg" | grep -q '"ok":true'; then
+      return 0
+    fi
+  fi
+  # Fallback through the gateway, for when the Bot API itself is the problem.
+  openclaw message send --channel telegram --target "$ALERT_TARGET" --message "$msg" >/dev/null 2>&1
+}
+
 if [ "${1:-}" = "--alert" ] && [ -n "$ALERT_TARGET" ]; then
   msg="Tin nhanh 247 - canh bao $(date '+%d/%m %H:%M')"
   for p in "${problems[@]}"; do msg="$msg"$'\n'"- $p"; done
-  openclaw message send --channel telegram --target "$ALERT_TARGET" --message "$msg" >/dev/null 2>&1 \
+  send_alert "$msg" \
     && echo "      (da gui canh bao toi $ALERT_TARGET)" \
     || echo "      (GUI CANH BAO THAT BAI)"
 fi
