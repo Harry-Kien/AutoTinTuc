@@ -1075,9 +1075,19 @@ RANG BUOC BAT BUOC:
 - Chi dung thong tin co trong NGUON. Tuyet doi khong them so lieu, ty le, ngay thang,
   ten rieng hay nhan dinh nao khong co trong nguon.
 - Giu nguyen moi con so xuat hien trong nguon, khong lam tron, khong doi don vi.
+  Giu nguyen cac ten viet tat (Fed, ECB, SNB, OPEC, ETF...).
 - Khong dua loi khuyen dau tu, khong du doan gia.
 - Khong chen URL.
-- Tieu de toi da 220 ky tu. Tom tat 1-2 cau, toi da 520 ky tu.
+
+TIEU DE (title): 45-220 ky tu, it nhat 7 tu, tieng Viet co dau. Phai neu ro CHU THE
+va HANH DONG/su kien (cong bo, tang, giam, giu nguyen, tan cong, dat thoa thuan...)
+hoac mot so lieu cu the. Khong dat cau hoi, khong cau moi (teaser), khong "...",
+khong ket thuc bang dau phay hay gach ngang.
+
+TOM TAT (summary): 1-2 cau HOAN CHINH, moi cau it nhat 8 tu, ket thuc bang dau
+cham, tong toi da 520 ky tu. Phai bo sung it nhat 4 tu/y moi so voi tieu de (boi
+canh, nguon dan, con so, dien bien tiep theo), moi cau co chu the + hanh dong + boi
+canh. Khong "...", khong lap lai nguyen van tieu de.
 
 Tra ve DUNG mot doi tuong JSON, khong kem giai thich, khong kem dau ``:
 {"title": "...", "summary": "..."}
@@ -1317,6 +1327,7 @@ def _subscription_tier(item: dict, prompt: str, source_title: str, source_body: 
     title, summary = _validated_rewrite(payload, source_title, source_body)
     if not (title and summary):
         ledger.record_error("subscription-gate-rejected", now)
+        ledger.record_error("gate-issue-fact-or-language", now)
         return "", ""
     title, summary, issues = _llm_draft_issues(title, summary, item)
     if issues:
@@ -1324,6 +1335,8 @@ def _subscription_tier(item: dict, prompt: str, source_title: str, source_body: 
         # exactly like a failed fact gate: no pause, just move to the next
         # tier - the free tier's miss may still be rescued by a paid draft.
         ledger.record_error("subscription-gate-rejected", now)
+        for issue in issues:
+            ledger.record_error(f"gate-issue-{issue}", now)
         return "", ""
     ledger.record_call("subscription", 0.0, False, now)
     item["editorial_path"] = "subscription"
@@ -1367,6 +1380,7 @@ def _openai_tier(item: dict, prompt: str, source_title: str, source_body: str,
             ledger.pause_api(err.kind, now, float(api.get("pauseMinutesAfterFailure", 5)) * 60)
         return "", "", False
     title, summary = _validated_rewrite(reply, source_title, source_body)
+    issues = ["fact-or-language"]
     if title and summary:
         title, summary, issues = _llm_draft_issues(title, summary, item)
         if not issues:
@@ -1375,8 +1389,11 @@ def _openai_tier(item: dict, prompt: str, source_title: str, source_body: str,
             return title, summary, False
     # A paid draft that fails the fact gate OR the headline/summary gates
     # stops the LLM tiers here: never pay for a second opinion, and never ask
-    # the free tier to redo work the paid tier already failed at.
+    # the free tier to redo work the paid tier already failed at. The per-gate
+    # counters show which rule the model keeps tripping, for prompt tuning.
     ledger.record_error("gate-rejected", now)
+    for issue in issues:
+        ledger.record_error(f"gate-issue-{issue}", now)
     return "", "", True
 
 

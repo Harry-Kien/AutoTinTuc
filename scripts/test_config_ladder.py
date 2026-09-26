@@ -49,7 +49,11 @@ def main() -> int:
     if coin:
         check("Coin369 shape", coin[0] == {"name": "Coin369", "type": "telegram_public",
                                            "url": "https://t.me/s/coin369channel", "category": "world_macro",
-                                           "priority": 2, "sourceTier": "repost", "minimumTextChars": 80}, coin[0])
+                                           "priority": 4, "sourceTier": "repost", "minimumTextChars": 80}, coin[0])
+    check("vietnamMarket no longer keyed on the generic word for bank",
+          not any(term in ("ngân hàng", "ngan hang") for term in config["assets"]["vietnamMarket"]),
+          config["assets"]["vietnamMarket"])
+    check("macroPolicy bucket present", "macroPolicy" in config["assets"], list(config["assets"]))
     names = [feed["name"] for feed in config["feeds"]]
     check("feed names unique", len(names) == len(set(names)), names)
     print()
