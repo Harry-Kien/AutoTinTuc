@@ -13,6 +13,7 @@ import os
 import subprocess
 import tempfile
 import time
+import uuid
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -287,27 +288,41 @@ def subscription_block_reason(cfg: dict, ledger: Ledger, quota: dict, now: float
 
 
 def subscription_editorial(prompt: str, cfg: dict, cli: list[str], env: dict | None = None) -> str:
-    """Run one isolated `openclaw agent exec` turn. Returns stdout, '' on failure.
+    """Run one subscription turn through the gateway agent. Returns stdout,
+    '' on failure.
 
-    `agent exec` rather than `agent --session-key`: a fixed session key made
-    every call resend the whole conversation (122k tokens by 2026-09-25).
+    Each call gets a throwaway session key that is deleted afterwards: a fixed
+    key made every call resend the whole conversation (122k tokens by
+    2026-09-25). `agent exec` was tried first but, verified live on
+    2026-09-26, it ignores the agent's OAuth profile order and reports "no
+    usable profiles" while the gateway path serves the same account fine.
 
     `env` defaults to a scrubbed copy of the process environment: this
     subprocess reads untrusted article text with exec tools, so it must never
     inherit the OpenAI key or the Telegram token that the caller holds.
     """
     timeout = int(cfg.get("timeoutSeconds", 180))
+    run_env = env if env is not None else scrubbed_env()
+    session_key = f"agent:main:fastnews247-sub-{uuid.uuid4().hex[:12]}"
+    stdout = ""
     with tempfile.TemporaryDirectory(prefix="fastnews-sub-") as workdir:
         prompt_path = Path(workdir) / "prompt.txt"
         prompt_path.write_text(prompt, encoding="utf-8")
-        command = [*cli, "agent", "exec", "--message-file", str(prompt_path),
+        command = [*cli, "agent", "--message-file", str(prompt_path),
                    "--model", str(cfg.get("model", "openai/gpt-5.5")),
-                   "--thinking", "low", "--json", "--timeout", str(timeout),
-                   "--cwd", workdir]
+                   "--session-key", session_key,
+                   "--thinking", "low", "--json", "--timeout", str(timeout)]
         try:
             result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
-                                    errors="replace", timeout=timeout + 30,
-                                    env=env if env is not None else scrubbed_env())
+                                    errors="replace", timeout=timeout + 30, env=run_env)
+            stdout = result.stdout or ""
         except (subprocess.TimeoutExpired, OSError):
-            return ""
-    return result.stdout or ""
+            stdout = ""
+        finally:
+            try:
+                subprocess.run([*cli, "sessions", "delete", session_key, "--agent", "main", "--yes", "--json"],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               timeout=120, env=run_env)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+    return stdout

@@ -57,7 +57,7 @@
       "enabled": true,
       "model": "openai/gpt-5.5",
       "maxCallsPerHour": 10,
-      "minUsableProfiles": 2,
+      "minUsableProfiles": 1,
       "quotaCacheMaxAgeMinutes": 120,
       "pauseMinutesAfterFailure": 15,
       "timeoutSeconds": 120

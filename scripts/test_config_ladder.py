@@ -40,7 +40,7 @@ def main() -> int:
           api["pricesPerMTok"])
     check("key comes from env", api["apiKeyEnv"] == "OPENAI_API_KEY", api["apiKeyEnv"])
     check("subscription guard", (sub["maxCallsPerHour"], sub["minUsableProfiles"], sub["quotaCacheMaxAgeMinutes"])
-          == (10, 2, 120), sub)
+          == (10, 1, 120), sub)
     check("direct transport", posting["telegram"]["mode"] == "direct", posting["telegram"])
     check("maxPostsPerRun 6", posting["maxPostsPerRun"] == 6, posting["maxPostsPerRun"])
     check("rejectRetryMinutes 60", posting.get("rejectRetryMinutes") == 60, posting.get("rejectRetryMinutes"))

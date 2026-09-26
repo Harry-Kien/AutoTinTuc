@@ -284,13 +284,17 @@ def main() -> int:
 
         print("subscription_editorial")
         seen = {}
+        calls: list[list[str]] = []
 
         def fake_run(command, **kwargs):
-            seen["command"] = list(command)
+            calls.append(list(command))
             seen["env"] = kwargs.get("env")
-            index = command.index("--message-file")
-            seen["prompt"] = Path(command[index + 1]).read_text(encoding="utf-8")
-            return types.SimpleNamespace(stdout='{"text": "ok"}', stderr="", returncode=0)
+            if "--message-file" in command:
+                seen["command"] = list(command)
+                index = command.index("--message-file")
+                seen["prompt"] = Path(command[index + 1]).read_text(encoding="utf-8")
+                return types.SimpleNamespace(stdout='{"text": "ok"}', stderr="", returncode=0)
+            return types.SimpleNamespace(stdout='{"ok": true}', stderr="", returncode=0)
 
         llm.subprocess.run = fake_run
         os.environ["OPENAI_API_KEY"] = "sk-should-not-leak"
@@ -299,11 +303,20 @@ def main() -> int:
             out = llm.subscription_editorial("ARTICLE BODY", {"model": "openai/gpt-5.5", "timeoutSeconds": 60},
                                              ["node", "/fake/openclaw.mjs"])
             command = seen["command"]
+            first_prompt = seen["prompt"]
             check("returns stdout", out == '{"text": "ok"}', out)
-            check("isolated agent exec", command[2:4] == ["agent", "exec"], command)
-            check("no persistent session", "--session-key" not in command, command)
+            check("gateway agent turn, not agent exec", command[2] == "agent" and "exec" not in command, command)
+            key = command[command.index("--session-key") + 1]
+            check("throwaway session key", key.startswith("agent:main:fastnews247-sub-"), key)
+            check("session deleted afterwards",
+                  len(calls) == 2 and calls[1][2:4] == ["sessions", "delete"] and key in calls[1] and "--yes" in calls[1],
+                  calls)
+            calls.clear()
+            llm.subscription_editorial("B", {}, ["openclaw"])
+            second_key = calls[0][calls[0].index("--session-key") + 1]
+            check("a new session key per call", second_key != key, (key, second_key))
             check("model passed", command[command.index("--model") + 1] == "openai/gpt-5.5", command)
-            check("prompt via file, not argv", seen["prompt"] == "ARTICLE BODY"
+            check("prompt via file, not argv", first_prompt == "ARTICLE BODY"
                   and not any("ARTICLE BODY" in part for part in command), command)
             check("env passed by default", seen["env"] is not None, seen["env"])
             check("default env scrubs OPENAI_API_KEY", "OPENAI_API_KEY" not in seen["env"], list(seen["env"] or {}))
