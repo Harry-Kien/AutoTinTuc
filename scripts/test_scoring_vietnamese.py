@@ -119,6 +119,17 @@ def main() -> int:
     finally:
         llm.openai_editorial, llm.subscription_editorial, bot.vietnamese_editorial = saved
 
+    print("valid Vietnamese newsroom headlines pass the main-event gate")
+    ok_meta = {"source": "X", "source_article_verified": True}
+    for headline in ("ADB: Việt Nam cần đa dạng hóa nguồn vốn để hỗ trợ tăng trưởng dài hạn",
+                     "Thống đốc SNB nhận định đà giảm của đồng franc chỉ là xu hướng ngắn hạn",
+                     "Ủy viên SEC Hester Peirce sẽ rời vị trí sau nhiệm kỳ kéo dài nhiều năm"):
+        issues = bot.headline_quality_issues(headline, ok_meta)
+        check(f"main event recognised: {headline[:45]}", "main-event-not-explicit" not in issues, issues)
+    vague = "Thị trường vàng hôm nay có nhiều thay đổi đáng chú ý với nhà đầu tư trong nước"
+    issues = bot.headline_quality_issues(vague, ok_meta)
+    check("vague headline still rejected", bool(issues), issues)
+
     print("the editorial prompt states the gates the drafts are held to")
     prompt = bot.EDITORIAL_PROMPT
     check("headline length rule in prompt", "45-220" in prompt and "7 tu" in prompt)

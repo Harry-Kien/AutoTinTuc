@@ -32,6 +32,7 @@ FATAL_ERROR_CODES = {"invalid_api_key", "insufficient_quota", "account_deactivat
 API_OFF_SECONDS = 30 * 60
 KEEP_DAYS = 14
 KEEP_HOURS = 48
+KEEP_REJECTS = 20
 # Charged when a model has no price in config: the dearest current rate, so an
 # unpriced model can never slip past the daily cap as free.
 FALLBACK_PRICE = {"input": 10.0, "output": 50.0}
@@ -97,6 +98,7 @@ class Ledger:
             "lastSubscriptionError": str(raw.get("lastSubscriptionError") or ""),
             "apiPausedUntil": self._number(raw.get("apiPausedUntil")),
             "lastApiPauseReason": str(raw.get("lastApiPauseReason") or ""),
+            "recentRejects": raw.get("recentRejects") if isinstance(raw.get("recentRejects"), list) else [],
         }
 
     def _dict(self, value) -> dict:
@@ -159,6 +161,12 @@ class Ledger:
     def pause_subscription(self, reason: str, now: float, seconds: float) -> None:
         self.data["subscriptionPausedUntil"] = now + seconds
         self.data["lastSubscriptionError"] = reason
+
+    def note_reject(self, tier: str, title: str, summary: str, issues: list, now: float) -> None:
+        """Keep the last KEEP_REJECTS drafts the gates refused, for prompt tuning."""
+        self.data["recentRejects"].append({"at": vietnam_hour(now), "tier": tier, "title": title[:240],
+                                           "summary": summary[:600], "issues": list(issues)})
+        del self.data["recentRejects"][:-KEEP_REJECTS]
 
     def save(self) -> None:
         for bucket, keep in (("days", KEEP_DAYS), ("subscriptionCalls", KEEP_HOURS)):

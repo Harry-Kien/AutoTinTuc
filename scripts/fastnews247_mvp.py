@@ -787,6 +787,22 @@ def _fact_numbers(text: str) -> set[str]:
     return values
 
 
+
+# Newsroom verbs for Vietnamese LLM drafts. The original lists were written for
+# machine translation and rejected valid headlines such as "ADB: Viet Nam can
+# da dang hoa..." or "SNB nhan dinh...". Facts are still checked by numbers.
+VIETNAMESE_EVENT_VERBS = (
+    "nhận định", "cho rằng", "kêu gọi", "đề xuất", "yêu cầu", "dự báo", "ước tính",
+    "ghi nhận", "xác nhận", "phủ nhận", "tuyên bố", "thông báo", "cam kết", "đồng ý",
+    "phản đối", "từ chối", "chấp thuận", "thảo luận", "đạt được", "ký kết", "triển khai",
+    "khởi kiện", "kiện", "cáo buộc", "điều tra", "bắt giữ", "tiêu diệt", "không kích",
+    "rời", "từ chức", "bổ nhiệm", "sáp nhập", "thâu tóm", "niêm yết", "phá sản",
+    "leo thang", "hạ nhiệt", "phục hồi", "lao dốc", "tăng vọt", "chạm", "lập đỉnh",
+    "thu hút", "rút", "bơm", "siết", "nới", "cần",
+    "dừng", "tạm dừng", "hoãn", "mở rộng", "thu hẹp", "chuyển", "trao", "nhận",
+)
+
+
 def _event_is_explicit(text: str) -> bool:
     normalized = normalize_text(text)
     event_markers = (
@@ -796,7 +812,7 @@ def _event_is_explicit(text: str) -> bool:
         "đạt", "mất", "mua", "bán", "phê duyệt", "ký", "áp", "dỡ", "cắt", "nâng", "hạ",
         "tấn công", "đàm phán", "ra mắt", "thông qua", "cảnh báo", "phát hành", "đầu tư",
     )
-    return any(term_matches(normalized, marker) for marker in event_markers)
+    return any(term_matches(normalized, marker) for marker in event_markers + VIETNAMESE_EVENT_VERBS)
 
 
 def source_summary_sentences(item: dict, limit: int = 2) -> list[str]:
@@ -938,7 +954,8 @@ def headline_quality_issues(headline: str, item: dict) -> list[str]:
         r"thùng|ounce|tấn|btc|eth)\b",
         normalized,
     )
-    if not quantitative_fact and not any(marker in normalized for marker in event_markers):
+    if not quantitative_fact and not any(term_matches(normalized, marker)
+                                         for marker in event_markers + VIETNAMESE_EVENT_VERBS):
         issues.append("main-event-not-explicit")
     return issues
 
@@ -1350,6 +1367,7 @@ def _subscription_tier(item: dict, prompt: str, source_title: str, source_body: 
         ledger.record_error("subscription-gate-rejected", now)
         for issue in issues:
             ledger.record_error(f"gate-issue-{issue}", now)
+        ledger.note_reject("subscription", title, summary, issues, now)
         return "", ""
     ledger.record_call("subscription", 0.0, False, now)
     item["editorial_path"] = "subscription"
@@ -1407,6 +1425,7 @@ def _openai_tier(item: dict, prompt: str, source_title: str, source_body: str,
     ledger.record_error("gate-rejected", now)
     for issue in issues:
         ledger.record_error(f"gate-issue-{issue}", now)
+    ledger.note_reject(tier, str(reply.get("title", "")), str(reply.get("summary", "")), issues, now)
     return "", "", True
 
 
