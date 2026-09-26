@@ -1438,6 +1438,7 @@ def draft_post(item: dict, score: int, tags: list[str], config: dict | None = No
 
     if issues:
         return "", issues
+    item["vi_title"] = title
     label = f"🚨 Tin nhanh 247 | {flags} {market_label}"
     heat_icon = "🔥" if score >= 5 else "⚡️" if score == 4 else "👀"
     hot_stars = "⭐️" * max(1, min(5, int(score)))
@@ -1719,6 +1720,11 @@ def run_once(config: dict, post: bool = False) -> int:
         for value in state.get("seen", {}).values()
         if value.get("title")
     }
+    # Items the gates rejected, remembered so a paid editor is not asked to
+    # rewrite the same failing item every cycle until it goes stale.
+    reject_window = int(config["posting"].get("rejectRetryMinutes", 60)) * 60
+    rejected_at = {key: when for key, when in state.get("rejected", {}).items()
+                   if when >= time.time() - reject_window}
     feed_workers = max(2, min(int(config.get("fetching", {}).get("feedWorkers", 8)), 12))
     with concurrent.futures.ThreadPoolExecutor(max_workers=feed_workers) as executor:
         future_to_feed = {executor.submit(parse_feed, feed): feed for feed in config["feeds"]}
@@ -1737,7 +1743,8 @@ def run_once(config: dict, post: bool = False) -> int:
             for item in feed_items:
                 item["fingerprint"] = fingerprint(item)
                 normalized_title = normalize_text(item.get("title", ""))
-                if item["fingerprint"] in state["seen"] or normalized_title in seen_titles:
+                if (item["fingerprint"] in state["seen"] or normalized_title in seen_titles
+                        or item["fingerprint"] in rejected_at):
                     continue
                 freshness = freshness_issue(item, config)
                 if freshness:
@@ -1758,6 +1765,19 @@ def run_once(config: dict, post: bool = False) -> int:
         if any(same_event(item, previous) for previous in list(state["seen"].values()) + selected):
             rejected.append(f"{item['source']}: duplicate-event :: {item['title']}")
             continue
+        # A source already in Vietnamese can be checked before paying for it.
+        if looks_vietnamese(item.get("title", "")) and duplicates_posted_vietnamese(item["title"], state, selected):
+            rejected.append(f"{item['source']}: duplicate-event-vi :: {item['title'][:120]}")
+            continue
+        # One source publishing a burst should not take every slot in a run.
+        # Checked before drafting so no editor call is spent on an item that
+        # would be dropped anyway. 0 disables the cap.
+        per_source = int(config["posting"].get("maxPostsPerSourcePerRun", 0))
+        if per_source > 0:
+            taken = sum(1 for chosen in selected if chosen.get("source") == item.get("source"))
+            if taken >= per_source:
+                rejected.append(f"{item['source']}: source-quota-reached :: {item['title'][:120]}")
+                continue
         if item.get("inline_article") is not None:
             # The source's own post is the article (a Telegram channel has no
             # separate page), so there is nothing to fetch.
@@ -1794,16 +1814,13 @@ def run_once(config: dict, post: bool = False) -> int:
         draft, quality_issues = draft_post(item, item["score"], item["tags"],
                                            config, editorial_budget)
         if quality_issues:
+            rejected_at[item["fingerprint"]] = time.time()
             rejected.append(f"{item['source']}: {','.join(quality_issues)} :: {item['title'][:120]}")
             continue
-        # One source publishing a burst should not take every slot in a run.
-        # 0 disables the cap.
-        per_source = int(config["posting"].get("maxPostsPerSourcePerRun", 0))
-        if per_source > 0:
-            taken = sum(1 for chosen in selected if chosen.get("source") == item.get("source"))
-            if taken >= per_source:
-                rejected.append(f"{item['source']}: source-quota-reached :: {item['title'][:120]}")
-                continue
+        if duplicates_posted_vietnamese(item.get("vi_title", ""), state, selected):
+            rejected_at[item["fingerprint"]] = time.time()
+            rejected.append(f"{item['source']}: duplicate-event-vi :: {item['title'][:120]}")
+            continue
         item["draft"] = draft
         selected.append(item)
         if len(selected) >= config["posting"]["maxPostsPerRun"]:
@@ -1832,6 +1849,8 @@ def run_once(config: dict, post: bool = False) -> int:
                 print(f"Posting live: {item['source']} - {item['title']}", flush=True)
                 record = {"time": time.time(), "title": item["title"], "source": item["source"],
                           "score": item["score"], "link": item.get("link", ""),
+                          "postedTitle": item.get("vi_title", ""),
+                          "editorialPath": item.get("editorial_path", ""),
                           "status": "pending", "reason": "write-ahead-send-intent"}
                 state["seen"][item["fingerprint"]] = record
                 save_json(state_path, state)
@@ -1851,6 +1870,7 @@ def run_once(config: dict, post: bool = False) -> int:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines), encoding="utf-8")
+    state["rejected"] = rejected_at
     horizon = time.time() - int(config["posting"].get("maximumAgeMinutes", 240)) * 60
     configured = {feed["url"] for feed in config["feeds"]}
     save_json(cache_path, {
@@ -1876,6 +1896,19 @@ def same_event(first, second):
     return bool(a and b and (a == b or
                 (len(a & b) >= 4 and len(a & b) / min(len(a), len(b)) >= 0.8
                  and _fact_numbers(first.get("title", "")) == _fact_numbers(second.get("title", "")))))
+
+
+def duplicates_posted_vietnamese(title: str, state: dict, selected: list[dict]) -> bool:
+    """Compare a Vietnamese title with the Vietnamese titles already published.
+
+    same_event compares words, so an English source and a Vietnamese one about
+    the same event can only meet here, after both are in Vietnamese.
+    """
+    if not title:
+        return False
+    others = [record.get("postedTitle", "") for record in state.get("seen", {}).values()]
+    others += [chosen.get("vi_title", "") for chosen in selected]
+    return any(other and same_event({"title": title}, {"title": other}) for other in others)
 
 
 @contextmanager
