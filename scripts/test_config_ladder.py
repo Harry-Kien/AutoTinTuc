@@ -30,6 +30,9 @@ def main() -> int:
           editorial.get("order"))
     check("pause after a silent subscription", editorial["subscription"].get("pauseMinutesAfterFailure") == 15,
           editorial["subscription"])
+    check("rollback path intact", (editorial.get("model"), editorial.get("sessionKey"))
+          == ("openai/gpt-5.5", "agent:main:fastnews247-editor"),
+          (editorial.get("model"), editorial.get("sessionKey")))
     check("models", (api["model"], api["hotModel"], api["hotMinScore"]) == ("gpt-5.4-mini", "gpt-5.5", 5), api)
     check("budgets", (api["dailyBudgetUsd"], api["hotDailyBudgetUsd"]) == (3.0, 1.5), api)
     check("both models priced", all(model in api["pricesPerMTok"] for model in (api["model"], api["hotModel"])),

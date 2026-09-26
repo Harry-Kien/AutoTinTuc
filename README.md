@@ -108,7 +108,7 @@ rỗng và bỏ tin, đúng như cách đường dịch máy đang làm — khô
 
 Chọn bằng trường `posting.telegram.mode` trong `config/fastnews247.sources.json`.
 
-### `mode: "bridge"` — mặc định, dùng cho cả Windows lẫn VPS
+### `mode: "bridge"` — dùng trên Windows và khi rollback; VPS nay dùng `"direct"`
 
 Đẩy qua OpenClaw CLI để token không bao giờ rời khỏi OpenClaw. Đây là thiết kế gốc và
 là đường được khuyến nghị.
