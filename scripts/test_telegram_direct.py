@@ -54,6 +54,24 @@ def stub_http_error(code: int, body: str):
     return _open
 
 
+def stub_sequence(*steps):
+    def _open(request, timeout=None):
+        _open.calls += 1
+        step = steps[_open.calls - 1]
+        if isinstance(step, Exception):
+            raise step
+        return _Response(json.dumps(step).encode("utf-8"))
+    _open.calls = 0
+    return _open
+
+
+def too_many(retry_after: int):
+    body = json.dumps({"ok": False, "error_code": 429,
+                       "description": f"Too Many Requests: retry after {retry_after}",
+                       "parameters": {"retry_after": retry_after}})
+    return urllib.error.HTTPError("https://api.telegram.org/x", 429, "err", {}, io.BytesIO(body.encode("utf-8")))
+
+
 def main() -> int:
     os.environ["TEST_TG_TOKEN"] = TOKEN
     os.environ.pop("TEST_TG_CHANNEL", None)
@@ -85,6 +103,31 @@ def main() -> int:
         out = bot.telegram_direct_post(TG, "x")
         check("http error -> pending", out.get("status") == "pending", out)
         check("token redacted in detail", TOKEN not in json.dumps(out), "TOKEN LEAKED")
+
+        print("429 handling")
+        slept = []
+        real_sleep = bot.time.sleep
+        bot.time.sleep = slept.append
+        try:
+            urllib.request.urlopen = stub_sequence(too_many(3), {"ok": True, "result": {
+                "message_id": 7, "chat": {"id": -100}}})
+            out = bot.telegram_direct_post(TG, "x")
+            check("short retry_after -> waits and succeeds", out.get("status") == "confirmed", out)
+            check("waited retry_after", slept == [3.0], slept)
+
+            slept.clear()
+            urllib.request.urlopen = stub_sequence(too_many(120))
+            out = bot.telegram_direct_post(TG, "x")
+            check("long retry_after -> pending, no wait",
+                  out.get("reason") == "telegram-rate-limited" and slept == [], (out, slept))
+
+            slept.clear()
+            urllib.request.urlopen = stub_sequence(too_many(2), too_many(2))
+            out = bot.telegram_direct_post(TG, "x")
+            check("retries only once", out.get("reason") == "telegram-rate-limited" and slept == [2.0],
+                  (out, slept))
+        finally:
+            bot.time.sleep = real_sleep
 
         print("pre-flight checks")
         cfg = {"posting": {"telegram": dict(TG, enabled=True)}}

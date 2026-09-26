@@ -1600,12 +1600,22 @@ def _redact_token(text: str, token: str) -> str:
     return text.replace(token, "<token>") if token else text
 
 
+def _telegram_retry_after(status: int, detail: str) -> float:
+    """Seconds Telegram asked us to wait, from a 429 body; 0 otherwise."""
+    if status != 429:
+        return 0.0
+    try:
+        return float((json.loads(detail).get("parameters") or {}).get("retry_after") or 0)
+    except (ValueError, AttributeError, TypeError):
+        return 0.0
+
+
 def telegram_direct_post(tg: dict, text: str) -> dict:
     """Post straight to the Telegram Bot API.
 
-    Used on hosts that do not run OpenClaw (a Linux VPS). The bridge remains the
-    default; this path reads the token from the environment name declared by
-    tokenEnv and never writes it to logs.
+    Reads the token from the environment name declared by tokenEnv and never
+    writes it to logs. A 429 with a short retry_after is waited out once:
+    Telegram did not accept the message, so resending cannot duplicate it.
     """
     token_env = tg.get("tokenEnv", "")
     token = os.environ.get(token_env, "").strip()
@@ -1620,22 +1630,29 @@ def telegram_direct_post(tg: dict, text: str) -> dict:
         "text": text,
         "disable_web_page_preview": True,
     }).encode("utf-8")
-    request = urllib.request.Request(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        data=body,
-        headers={"Content-Type": "application/json; charset=utf-8"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            payload = json.loads(response.read().decode("utf-8", "replace"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")[:300]
-        return {"status": "pending", "reason": "telegram-http-error",
-                "httpStatus": exc.code, "detail": _redact_token(detail, token)}
-    except Exception as exc:
-        return {"status": "pending", "reason": "telegram-request-failed",
-                "detail": _redact_token(str(exc), token)}
+    for attempt in (0, 1):
+        request = urllib.request.Request(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            data=body,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                payload = json.loads(response.read().decode("utf-8", "replace"))
+            break
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:300]
+            wait = _telegram_retry_after(exc.code, detail)
+            if attempt == 0 and 0 < wait <= 30:
+                time.sleep(wait)
+                continue
+            reason = "telegram-rate-limited" if exc.code == 429 else "telegram-http-error"
+            return {"status": "pending", "reason": reason,
+                    "httpStatus": exc.code, "detail": _redact_token(detail, token)}
+        except Exception as exc:
+            return {"status": "pending", "reason": "telegram-request-failed",
+                    "detail": _redact_token(str(exc), token)}
 
     ack = extract_ack(payload)
     if ack:
