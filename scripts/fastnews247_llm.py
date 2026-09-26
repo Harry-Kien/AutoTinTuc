@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import subprocess
 import tempfile
 import time
@@ -34,6 +35,20 @@ KEEP_HOURS = 48
 # Charged when a model has no price in config: the dearest current rate, so an
 # unpriced model can never slip past the daily cap as free.
 FALLBACK_PRICE = {"input": 10.0, "output": 50.0}
+
+
+def scrubbed_env(*names: str) -> dict:
+    """A copy of the process environment with `names` and every OPENAI_*
+    variable removed.
+
+    Passed as `env=` to every OpenClaw subprocess (subscription_editorial,
+    openclaw_rewrite, telegram_bridge_post): those read untrusted article text
+    with exec tools, and the bot's own environment holds the OpenAI key and the
+    Telegram token neither of them needs.
+    """
+    drop = {name.casefold() for name in names if name}
+    return {key: value for key, value in os.environ.items()
+            if key.casefold() not in drop and not key.startswith("OPENAI_")}
 
 
 def vietnam_day(now: float) -> str:
@@ -68,14 +83,35 @@ class Ledger:
         self.path = path
         self._save = save
         raw = load(path, {}) or {}
+        if not isinstance(raw, dict):
+            raw = {}
+        # A hand-edited or damaged file must never stop the bot: wrong-typed
+        # fields are replaced with empty ones and `repaired` tells the caller.
+        self.repaired = False
         self.data = {
-            "days": raw.get("days", {}),
-            "subscriptionCalls": raw.get("subscriptionCalls", {}),
-            "apiDisabledUntil": float(raw.get("apiDisabledUntil", 0) or 0),
-            "lastApiError": raw.get("lastApiError", ""),
-            "subscriptionPausedUntil": float(raw.get("subscriptionPausedUntil", 0) or 0),
-            "lastSubscriptionError": raw.get("lastSubscriptionError", ""),
+            "days": self._dict(raw.get("days")),
+            "subscriptionCalls": self._dict(raw.get("subscriptionCalls")),
+            "apiDisabledUntil": self._number(raw.get("apiDisabledUntil")),
+            "lastApiError": str(raw.get("lastApiError") or ""),
+            "subscriptionPausedUntil": self._number(raw.get("subscriptionPausedUntil")),
+            "lastSubscriptionError": str(raw.get("lastSubscriptionError") or ""),
+            "apiPausedUntil": self._number(raw.get("apiPausedUntil")),
+            "lastApiPauseReason": str(raw.get("lastApiPauseReason") or ""),
         }
+
+    def _dict(self, value) -> dict:
+        if isinstance(value, dict):
+            return value
+        if value is not None:
+            self.repaired = True
+        return {}
+
+    def _number(self, value) -> float:
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            self.repaired = True
+            return 0.0
 
     def day(self, now: float) -> dict:
         return self.data["days"].setdefault(vietnam_day(now), {
@@ -94,11 +130,22 @@ class Ledger:
         errors[kind] = errors.get(kind, 0) + 1
 
     def api_available(self, now: float) -> bool:
-        return now >= self.data["apiDisabledUntil"]
+        return now >= self.data["apiDisabledUntil"] and not self.api_paused(now)
 
     def disable_api(self, reason: str, now: float) -> None:
+        """A dead key (401/403, no credit): off for API_OFF_SECONDS, alerted."""
         self.data["apiDisabledUntil"] = now + API_OFF_SECONDS
         self.data["lastApiError"] = reason
+
+    def api_paused(self, now: float) -> bool:
+        return now < self.data["apiPausedUntil"]
+
+    def pause_api(self, reason: str, now: float, seconds: float) -> None:
+        """The circuit breaker for outages (network, 429, 5xx): a short pause
+        so a run does not wait ~90 s per item on an API that is down. Kept
+        apart from disable_api so the healthcheck does not report a dead key."""
+        self.data["apiPausedUntil"] = now + seconds
+        self.data["lastApiPauseReason"] = reason
 
     def subscription_calls(self, now: float) -> int:
         return int(self.data["subscriptionCalls"].get(vietnam_hour(now), 0))
@@ -231,11 +278,15 @@ def subscription_block_reason(cfg: dict, ledger: Ledger, quota: dict, now: float
     return ""
 
 
-def subscription_editorial(prompt: str, cfg: dict, cli: list[str]) -> str:
+def subscription_editorial(prompt: str, cfg: dict, cli: list[str], env: dict | None = None) -> str:
     """Run one isolated `openclaw agent exec` turn. Returns stdout, '' on failure.
 
     `agent exec` rather than `agent --session-key`: a fixed session key made
     every call resend the whole conversation (122k tokens by 2026-09-25).
+
+    `env` defaults to a scrubbed copy of the process environment: this
+    subprocess reads untrusted article text with exec tools, so it must never
+    inherit the OpenAI key or the Telegram token that the caller holds.
     """
     timeout = int(cfg.get("timeoutSeconds", 180))
     with tempfile.TemporaryDirectory(prefix="fastnews-sub-") as workdir:
@@ -247,7 +298,8 @@ def subscription_editorial(prompt: str, cfg: dict, cli: list[str]) -> str:
                    "--cwd", workdir]
         try:
             result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
-                                    errors="replace", timeout=timeout + 30)
+                                    errors="replace", timeout=timeout + 30,
+                                    env=env if env is not None else scrubbed_env())
         except (subprocess.TimeoutExpired, OSError):
             return ""
     return result.stdout or ""

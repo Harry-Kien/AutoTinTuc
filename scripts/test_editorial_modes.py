@@ -8,6 +8,7 @@ quota than editorial.maxLlmCallsPerRun.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import types
 from pathlib import Path
@@ -37,9 +38,11 @@ class Recorder:
         self.reply = reply
         self.calls: list[list[str]] = []
         self.prompts: list[str] = []
+        self.envs: list[dict] = []
 
     def __call__(self, command, **kwargs):
         self.calls.append(list(command))
+        self.envs.append(kwargs.get("env"))
         for index, part in enumerate(command):
             if part == "--message-file":
                 self.prompts.append(Path(command[index + 1]).read_text(encoding="utf-8"))
@@ -84,6 +87,18 @@ def main() -> int:
         check("noi dung bai KHONG nam tren dong lenh",
               not any("Fed held rates" in part for part in rec.calls[0]), rec.calls[0])
         check("prompt chua tieu de goc", "Gold climbs" in rec.prompts[0], rec.prompts[0][:80])
+
+        print("F1: subprocess khong duoc thua huong OPENAI_API_KEY")
+        os.environ["OPENAI_API_KEY"] = "sk-should-not-leak"
+        try:
+            rec = install(llm, translate_ok=False)
+            bot.editorial_for(ITEM, cfg, {"remaining": 5})
+            check("env duoc truyen cho subprocess", rec.envs and rec.envs[0] is not None, rec.envs)
+            check("OPENAI_API_KEY bi loc khoi env subprocess",
+                  "OPENAI_API_KEY" not in (rec.envs[0] or {}), rec.envs)
+            check("PATH van con trong env da loc", "PATH" in (rec.envs[0] or {}), rec.envs)
+        finally:
+            del os.environ["OPENAI_API_KEY"]
 
         print("ngan sach quota duoc ton trong")
         rec = install(llm, translate_ok=False)

@@ -125,6 +125,33 @@ def main() -> int:
             check("cache loaded before fetching", loaded.get(FEED["url"], {}).get("etag") == '"v9"', loaded)
             check("feeds no longer configured are dropped", "https://gone.test/rss" not in saved, saved.keys())
             check("stale items dropped on save", saved[FEED["url"]]["items"] == [], saved[FEED["url"]])
+
+        print("a corrupt or wrong-shaped feed cache never aborts the run")
+        payloads = ("{not json",
+                    json.dumps({"https://x": "oops", FEED["url"]: {"etag": '"v9"', "items": []}}))
+        for payload in payloads:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                cache_file = root / bot.FEED_CACHE_PATH
+                cache_file.parent.mkdir(parents=True, exist_ok=True)
+                cache_file.write_text(payload, encoding="utf-8")
+                seen_cache = {}
+
+                def fake_parse_cache(feed):
+                    seen_cache.update(bot.FEED_CACHE)
+                    return []
+
+                with patch.object(bot, "ROOT", root), patch.object(bot, "parse_feed", side_effect=fake_parse_cache):
+                    try:
+                        rc = bot.run_once(config, post=False)
+                    except Exception as exc:  # noqa: BLE001
+                        rc = exc
+                label = payload[:12]
+                check(f"cache {label!r} -> run completes", rc == 0, rc)
+                check(f"cache {label!r} -> only dict entries loaded",
+                      all(isinstance(v, dict) for v in seen_cache.values()), seen_cache)
+                saved = json.loads(cache_file.read_text(encoding="utf-8"))
+                check(f"cache {label!r} -> rewritten clean", isinstance(saved, dict) and "https://x" not in saved, saved)
     finally:
         urllib.request.urlopen = real
         bot.FEED_CACHE.clear()

@@ -23,6 +23,7 @@ import fastnews247_mvp as bot  # noqa: E402
 
 failures: list[str] = []
 KEY_ENV = "TEST_LADDER_OPENAI_KEY"
+TG_TOKEN_ENV = "TEST_LADDER_TG_TOKEN"
 # The headline gate requires >=45 chars and >=7 words, so GOOD's title carries
 # extra (fact-clean) context beyond the bare event; the summary must still add
 # >=4 new terms over the title to clear the "adds no new information" gate.
@@ -51,7 +52,8 @@ def make_config(order, max_per_hour=10):
                                      "gpt-5.5": {"input": 5.00, "output": 30.00}}},
         "subscription": {"enabled": True, "model": "openai/gpt-5.5", "maxCallsPerHour": max_per_hour,
                          "minUsableProfiles": 2, "quotaCacheMaxAgeMinutes": 120,
-                         "pauseMinutesAfterFailure": 15}}}
+                         "pauseMinutesAfterFailure": 15}},
+        "posting": {"telegram": {"tokenEnv": TG_TOKEN_ENV}}}
 
 
 SUB_FIRST = make_config(["subscription", "openai"])
@@ -90,10 +92,11 @@ class FakeSubscription:
     """reply None -> empty stdout (the tier gave nothing usable)."""
 
     def __init__(self, reply):
-        self.reply, self.calls = reply, 0
+        self.reply, self.calls, self.envs = reply, 0, []
 
-    def __call__(self, prompt, cfg, cli):
+    def __call__(self, prompt, cfg, cli, env=None):
         self.calls += 1
+        self.envs.append(env)
         return "" if self.reply is None else json.dumps({"text": json.dumps(self.reply)})
 
 
@@ -124,6 +127,7 @@ def main() -> int:
     saved = (llm.openai_editorial, llm.subscription_editorial, bot.vietnamese_editorial,
              bot.resolve_openclaw_cli, bot.ROOT)
     os.environ[KEY_ENV] = "sk-test-ladder"
+    os.environ[TG_TOKEN_ENV] = "tg-token-should-not-leak"
     bot.vietnamese_editorial = lambda it: TRANSLATED
     bot.resolve_openclaw_cli = lambda: ["node", "/fake/openclaw.mjs"]
     try:
@@ -139,6 +143,11 @@ def main() -> int:
             check("API not called", api.calls == [], api.calls)
             check("free call costs nothing", ledger_day(root)["spendUsd"] == 0.0, ledger_day(root))
             check("counted as subscription", ledger_day(root)["byTier"] == {"subscription": 1}, ledger_day(root))
+            check("subscription subprocess env scrubs the OpenAI key",
+                  KEY_ENV not in (sub.envs[0] or {}), sub.envs[0])
+            check("subscription subprocess env scrubs the Telegram token",
+                  TG_TOKEN_ENV not in (sub.envs[0] or {}), sub.envs[0])
+            check("subscription subprocess env keeps PATH", "PATH" in (sub.envs[0] or {}), sub.envs[0])
 
         print("subscription gives nothing -> paused, API at once, later items skip it")
         with tempfile.TemporaryDirectory() as directory:
@@ -326,6 +335,51 @@ def main() -> int:
                   (news.get("editorial_path"), sub.calls))
             check("transient error does not disable API", ledger_data(root)["apiDisabledUntil"] == 0)
 
+        print("transient API error -> API paused: the next item makes no paid call (circuit breaker)")
+        with tempfile.TemporaryDirectory() as directory:
+            root = fresh_root(directory, quota=False)
+            api, sub = FakeApi(error=llm.ApiError("network", retryable=True)), FakeSubscription(GOOD)
+            install(api, sub)
+            first = item(4)
+            title, _ = bot.editorial_for(first, SUB_FIRST, None)
+            check("first item -> translation after the failed call",
+                  title == TRANSLATED[0] and len(api.calls) == 1, (title, len(api.calls)))
+            second = item(4)
+            title, _ = bot.editorial_for(second, SUB_FIRST, None)
+            check("second item makes no API call while paused",
+                  len(api.calls) == 1 and second["editorial_path"] == "translate",
+                  (len(api.calls), second.get("editorial_path")))
+            data = ledger_data(root)
+            check("apiPausedUntil ~5 min ahead", data["apiPausedUntil"] > time.time() + 200, data.get("apiPausedUntil"))
+            check("pause reason kept", data["lastApiPauseReason"] == "network", data.get("lastApiPauseReason"))
+            check("a pause is not a disable (no dead-key alert)", data["apiDisabledUntil"] == 0)
+            check("network error recorded once", ledger_day(root)["errors"].get("network") == 1, ledger_day(root))
+
+        print("ledger cannot be written -> the cap fails closed: no paid call")
+        with tempfile.TemporaryDirectory() as directory:
+            root = fresh_root(directory, quota=False)
+            (root / bot.LEDGER_PATH).mkdir(parents=True)  # a directory where the file must go
+            api, sub = FakeApi(GOOD), FakeSubscription(GOOD)
+            install(api, sub)
+            news = item(4)
+            title, _ = bot.editorial_for(news, SUB_FIRST, None)
+            check("unwritable ledger -> no API call", api.calls == [], api.calls)
+            check("unwritable ledger -> translation", title == TRANSLATED[0] and news["editorial_path"] == "translate",
+                  (title, news.get("editorial_path")))
+
+        print("a ledger file that is valid JSON but the wrong shape never aborts the run")
+        with tempfile.TemporaryDirectory() as directory:
+            root = fresh_root(directory, quota=False)
+            (root / bot.LEDGER_PATH).parent.mkdir(parents=True, exist_ok=True)
+            (root / bot.LEDGER_PATH).write_text(json.dumps({"apiDisabledUntil": "soon", "days": []}), encoding="utf-8")
+            api, sub = FakeApi(GOOD), FakeSubscription(GOOD)
+            install(api, sub)
+            news = item(4)
+            title, _ = bot.editorial_for(news, SUB_FIRST, None)
+            check("wrong-shape ledger -> item still written by the API", title == GOOD["title"], title)
+            check("wrong-shape ledger recorded as ledger-unreadable",
+                  ledger_day(root)["errors"].get("ledger-unreadable") == 1, ledger_day(root))
+
         print("missing key / dead key")
         with tempfile.TemporaryDirectory() as directory:
             root = fresh_root(directory, quota=False)
@@ -359,6 +413,7 @@ def main() -> int:
         (llm.openai_editorial, llm.subscription_editorial, bot.vietnamese_editorial,
          bot.resolve_openclaw_cli, bot.ROOT) = saved
         os.environ.pop(KEY_ENV, None)
+        os.environ.pop(TG_TOKEN_ENV, None)
 
     print()
     if failures:

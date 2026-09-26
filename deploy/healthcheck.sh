@@ -117,6 +117,14 @@ if day.get("errors", {}).get("no-api-key"):
     print("problem|Chua co OPENAI_API_KEY trong .env - bot dang dung dich may")
 if float(ledger.get("subscriptionPausedUntil", 0) or 0) > time.time():
     print(f"note|subscription|tam dung ({ledger.get('lastSubscriptionError', '?')}) - dang dung API")
+if float(ledger.get("apiPausedUntil", 0) or 0) > time.time():
+    print(f"note|OpenAI API|tam dung ({ledger.get('lastApiPauseReason', '?')}) - dang dung du phong")
+fatal = {"invalid_api_key", "insufficient_quota", "account_deactivated",
+         "billing_hard_limit_reached", "billing_not_active"}
+refused = sorted(k for k in day.get("errors", {})
+                 if k in fatal or k.startswith("http-401") or k.startswith("http-403"))
+if refused:
+    print(f"problem|OpenAI API key bi tu choi hom nay ({', '.join(refused)}) - kiem tra key/so du")
 PY
 )
 while IFS='|' read -r kind first second; do

@@ -1207,10 +1207,14 @@ def openclaw_rewrite(item: dict, cfg: dict) -> tuple[str, str]:
             command += ["--session-key", str(cfg["sessionKey"])]
         timeout = int(cfg.get("timeoutSeconds", 180))
         command += ["--timeout", str(timeout)]
+        # This subprocess reads untrusted article text with exec tools, so it
+        # must never inherit the OpenAI key or the Telegram token (F1).
+        env = llm.scrubbed_env(cfg.get("apiKeyEnv", "OPENAI_API_KEY"),
+                               cfg.get("tokenEnv", "FASTNEWS247_TELEGRAM_BOT_TOKEN"))
         try:
             result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True,
                                     encoding="utf-8", errors="replace",
-                                    timeout=timeout + 30)
+                                    timeout=timeout + 30, env=env)
         except subprocess.TimeoutExpired:
             return "", ""
     finally:
@@ -1239,13 +1243,18 @@ def ladder_rewrite(item: dict, config: dict, now: float | None = None) -> tuple[
     now = time.time() if now is None else now
     ledger_path = ROOT / LEDGER_PATH
     ledger_unreadable = ledger_path.exists() and _load_json_quietly(ledger_path, None) is None
-    ledger = llm.Ledger(ledger_path, _load_json_quietly, save_json)
-    if ledger_unreadable:
+    try:
+        ledger = llm.Ledger(ledger_path, _load_json_quietly, save_json)
+    except Exception:
+        # Valid JSON of a shape the ledger cannot use: start fresh, note it.
+        ledger = llm.Ledger(ledger_path, lambda path, default: default, save_json)
+        ledger_unreadable = True
+    if ledger_unreadable or ledger.repaired:
         ledger.record_error("ledger-unreadable", now)
     title, summary = "", ""
     try:
         try:
-            title, summary = _ladder_llm(item, config.get("editorial", {}), ledger, now)
+            title, summary = _ladder_llm(item, config, ledger, now)
         except Exception as exc:
             ledger.record_error(f"ladder-exception-{type(exc).__name__}", now)
     finally:
@@ -1259,8 +1268,13 @@ def ladder_rewrite(item: dict, config: dict, now: float | None = None) -> tuple[
     return vietnamese_editorial(item)
 
 
-def _ladder_llm(item: dict, cfg: dict, ledger: "llm.Ledger", now: float) -> tuple[str, str]:
+def _ladder_llm(item: dict, config: dict, ledger: "llm.Ledger", now: float) -> tuple[str, str]:
+    cfg = config.get("editorial", {})
     api = cfg.get("openai", {})
+    tg = config.get("posting", {}).get("telegram", {})
+    # The subscription tier's subprocess must never inherit these, since it
+    # reads untrusted article text with exec tools (finding F1).
+    secret_names = (api.get("apiKeyEnv", "OPENAI_API_KEY"), tg.get("tokenEnv", ""))
     prompt, source_title, source_body = _editorial_prompt(item, int(api.get("sourceChars", 3000)))
     if not source_title or not source_body:
         return "", ""
@@ -1269,7 +1283,8 @@ def _ladder_llm(item: dict, cfg: dict, ledger: "llm.Ledger", now: float) -> tupl
             # Any miss on the free tier - skipped, silent or a failed gate -
             # hands the item to the next tier at once.
             title, summary = _subscription_tier(item, prompt, source_title, source_body,
-                                                cfg.get("subscription", {}), ledger, now)
+                                                cfg.get("subscription", {}), ledger, now,
+                                                llm.scrubbed_env(*secret_names))
             if title and summary:
                 return title, summary
         elif tier == "openai":
@@ -1282,7 +1297,7 @@ def _ladder_llm(item: dict, cfg: dict, ledger: "llm.Ledger", now: float) -> tupl
 
 
 def _subscription_tier(item: dict, prompt: str, source_title: str, source_body: str,
-                       sub: dict, ledger: "llm.Ledger", now: float) -> tuple[str, str]:
+                       sub: dict, ledger: "llm.Ledger", now: float, env: dict) -> tuple[str, str]:
     quota = _load_json_quietly(ROOT / QUOTA_PATH, {}) or {}
     if llm.subscription_block_reason(sub, ledger, quota, now):
         return "", ""
@@ -1291,7 +1306,8 @@ def _subscription_tier(item: dict, prompt: str, source_title: str, source_body: 
     except RuntimeError:
         return "", ""
     ledger.record_subscription_call(now)
-    payload = _extract_json_object(_extract_agent_text(llm.subscription_editorial(prompt, sub, cli)))
+    payload = _extract_json_object(_extract_agent_text(
+        llm.subscription_editorial(prompt, sub, cli, env=env)))
     if not payload:
         # Silence means cooldown, a sick gateway or a timeout - states that
         # last - so stop asking for a while instead of making every item wait.
@@ -1331,6 +1347,12 @@ def _openai_tier(item: dict, prompt: str, source_title: str, source_body: str,
     model = str(api.get("hotModel") if hot else api.get("model"))
     tier = "openai-hot" if hot else "openai"
     prices = api.get("pricesPerMTok", {})
+    # Fail closed: the daily cap is only real if what we spend gets written.
+    # A ledger that cannot be saved (full disk, permissions) means no paid call.
+    try:
+        ledger.save()
+    except OSError:
+        return "", "", False
     try:
         reply = llm.openai_editorial(
             prompt, model, api, key,
@@ -1339,6 +1361,10 @@ def _openai_tier(item: dict, prompt: str, source_title: str, source_body: str,
         ledger.record_error(err.kind, now)
         if err.fatal:
             ledger.disable_api(err.kind, now)
+        elif err.retryable:
+            # Outage (network, 429, 5xx) that survived its retry: pause the
+            # tier briefly so the next items do not each wait ~90 s on it.
+            ledger.pause_api(err.kind, now, float(api.get("pauseMinutesAfterFailure", 5)) * 60)
         return "", "", False
     title, summary = _validated_rewrite(reply, source_title, source_body)
     if title and summary:
@@ -1574,9 +1600,11 @@ def telegram_bridge_post(tg: dict, text: str) -> dict:
         return {"status": "pending", "reason": "bridge-cli-missing", "detail": str(exc)}
     command = [*cli, "message", "send", "--channel=telegram",
                f"--target={channel_id}", f"--message={text}", "--json"]
+    # This subprocess never needs the OpenAI key or the Telegram token (F1).
+    env = llm.scrubbed_env("OPENAI_API_KEY", tg.get("tokenEnv", "FASTNEWS247_TELEGRAM_BOT_TOKEN"))
     try:
         result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True,
-                                encoding="utf-8", errors="replace", timeout=60)
+                                encoding="utf-8", errors="replace", timeout=60, env=env)
     except subprocess.TimeoutExpired:
         return {"status": "pending", "reason": "bridge-timeout"}
     # Logs, exit status and submission are NOT an API acknowledgement.
@@ -1726,7 +1754,9 @@ def run_once(config: dict, post: bool = False) -> int:
 
     cache_path = ROOT / FEED_CACHE_PATH
     FEED_CACHE.clear()
-    FEED_CACHE.update(load_json(cache_path, {}) or {})
+    # A damaged cache file only costs a cold fetch; it must never stop the run.
+    FEED_CACHE.update({url: entry for url, entry in _load_json_quietly(cache_path, {}).items()
+                       if isinstance(entry, dict)})
 
     candidates = []
     errors = []

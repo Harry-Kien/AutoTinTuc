@@ -47,6 +47,7 @@
       "sourceChars": 3000,
       "dailyBudgetUsd": 3.0,
       "hotDailyBudgetUsd": 1.5,
+      "pauseMinutesAfterFailure": 5,
       "pricesPerMTok": {
         "gpt-5.4-mini": {"input": 0.75, "output": 4.50},
         "gpt-5.5": {"input": 5.00, "output": 30.00}

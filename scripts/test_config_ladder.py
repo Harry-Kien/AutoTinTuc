@@ -35,6 +35,7 @@ def main() -> int:
           (editorial.get("model"), editorial.get("sessionKey")))
     check("models", (api["model"], api["hotModel"], api["hotMinScore"]) == ("gpt-5.4-mini", "gpt-5.5", 5), api)
     check("budgets", (api["dailyBudgetUsd"], api["hotDailyBudgetUsd"]) == (3.0, 1.5), api)
+    check("API circuit breaker pause 5 min", api.get("pauseMinutesAfterFailure") == 5, api.get("pauseMinutesAfterFailure"))
     check("both models priced", all(model in api["pricesPerMTok"] for model in (api["model"], api["hotModel"])),
           api["pricesPerMTok"])
     check("key comes from env", api["apiKeyEnv"] == "OPENAI_API_KEY", api["apiKeyEnv"])

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 import tempfile
 import types
@@ -246,25 +247,76 @@ def main() -> int:
             check("pause persisted",
                   llm.Ledger(Path(directory) / "paused.json", load, save).subscription_paused(NOW + 60))
 
+            print("api pause (circuit breaker for outages)")
+            breaker = llm.Ledger(Path(directory) / "breaker.json", load, save)
+            check("api not paused by default", not breaker.api_paused(NOW) and breaker.api_available(NOW))
+            breaker.pause_api("network", NOW, 300)
+            check("paused api is unavailable", not breaker.api_available(NOW + 299))
+            check("api back after the pause", breaker.api_available(NOW + 300))
+            check("pause reason kept", breaker.data["lastApiPauseReason"] == "network")
+            check("a pause is not a disable", breaker.data["apiDisabledUntil"] == 0 and breaker.data["lastApiError"] == "")
+            breaker.save()
+            check("api pause persisted",
+                  llm.Ledger(Path(directory) / "breaker.json", load, save).api_paused(NOW + 60))
+
+            print("Ledger tolerates a wrong-shaped file")
+            odd = llm.Ledger(Path(directory) / "odd.json",
+                             lambda p, d: {"apiDisabledUntil": "soon", "days": [], "subscriptionCalls": None}, save)
+            check("wrong types replaced", odd.data["days"] == {} and odd.data["apiDisabledUntil"] == 0.0, odd.data)
+            check("repair flagged", odd.repaired is True)
+            check("missing fields are not a repair", llm.Ledger(Path(directory) / "new.json", load, save).repaired is False)
+            check("non-dict file treated as empty", llm.Ledger(Path(directory) / "l.json", lambda p, d: [1], save).data["days"] == {})
+
+        print("scrubbed_env")
+        os.environ["OPENAI_API_KEY"] = "sk-should-be-scrubbed"
+        os.environ["TEST_TOKEN_ENV_NAME"] = "tok-should-be-scrubbed"
+        try:
+            scrubbed = llm.scrubbed_env("TEST_TOKEN_ENV_NAME")
+            check("OPENAI_-prefixed vars dropped", "OPENAI_API_KEY" not in scrubbed, list(scrubbed))
+            check("named var dropped", "TEST_TOKEN_ENV_NAME" not in scrubbed, list(scrubbed))
+            check("name drop is case-insensitive",
+                  "test_token_env_name" not in llm.scrubbed_env("test_token_env_name"), "n/a")
+            check("PATH kept", "PATH" in scrubbed, list(scrubbed))
+            check("HOME kept", "HOME" in scrubbed, list(scrubbed))
+        finally:
+            del os.environ["OPENAI_API_KEY"]
+            del os.environ["TEST_TOKEN_ENV_NAME"]
+
         print("subscription_editorial")
         seen = {}
 
         def fake_run(command, **kwargs):
             seen["command"] = list(command)
+            seen["env"] = kwargs.get("env")
             index = command.index("--message-file")
             seen["prompt"] = Path(command[index + 1]).read_text(encoding="utf-8")
             return types.SimpleNamespace(stdout='{"text": "ok"}', stderr="", returncode=0)
 
         llm.subprocess.run = fake_run
-        out = llm.subscription_editorial("ARTICLE BODY", {"model": "openai/gpt-5.5", "timeoutSeconds": 60},
-                                         ["node", "/fake/openclaw.mjs"])
-        command = seen["command"]
-        check("returns stdout", out == '{"text": "ok"}', out)
-        check("isolated agent exec", command[2:4] == ["agent", "exec"], command)
-        check("no persistent session", "--session-key" not in command, command)
-        check("model passed", command[command.index("--model") + 1] == "openai/gpt-5.5", command)
-        check("prompt via file, not argv", seen["prompt"] == "ARTICLE BODY"
-              and not any("ARTICLE BODY" in part for part in command), command)
+        os.environ["OPENAI_API_KEY"] = "sk-should-not-leak"
+        os.environ["TEST_LLM_TOKEN"] = "tok-should-not-leak"
+        try:
+            out = llm.subscription_editorial("ARTICLE BODY", {"model": "openai/gpt-5.5", "timeoutSeconds": 60},
+                                             ["node", "/fake/openclaw.mjs"])
+            command = seen["command"]
+            check("returns stdout", out == '{"text": "ok"}', out)
+            check("isolated agent exec", command[2:4] == ["agent", "exec"], command)
+            check("no persistent session", "--session-key" not in command, command)
+            check("model passed", command[command.index("--model") + 1] == "openai/gpt-5.5", command)
+            check("prompt via file, not argv", seen["prompt"] == "ARTICLE BODY"
+                  and not any("ARTICLE BODY" in part for part in command), command)
+            check("env passed by default", seen["env"] is not None, seen["env"])
+            check("default env scrubs OPENAI_API_KEY", "OPENAI_API_KEY" not in seen["env"], list(seen["env"] or {}))
+            check("default env keeps PATH", "PATH" in (seen["env"] or {}), list(seen["env"] or {}))
+            check("default env keeps HOME", "HOME" in (seen["env"] or {}), list(seen["env"] or {}))
+
+            explicit_env = {"CUSTOM": "1"}
+            llm.subscription_editorial("ARTICLE BODY", {"model": "openai/gpt-5.5"},
+                                       ["node", "/fake/openclaw.mjs"], env=explicit_env)
+            check("explicit env passed through unchanged", seen["env"] == explicit_env, seen["env"])
+        finally:
+            del os.environ["OPENAI_API_KEY"]
+            del os.environ["TEST_LLM_TOKEN"]
 
         def slow_run(command, **kwargs):
             raise llm.subprocess.TimeoutExpired(command, 1)
